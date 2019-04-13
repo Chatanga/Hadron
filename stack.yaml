@@ -1,0 +1,10 @@
+resolver: nightly-2017-04-23
+
+packages:
+- '.'
+
+extra-deps:
+- GPipe-2.2
+- GPipe-GLFW-1.4.0
+- freetype2-0.1.1
+- rosezipper-0.1

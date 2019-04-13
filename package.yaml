@@ -1,0 +1,35 @@
+name:           Hadron
+version:        1.0
+author:         Florent Lioult
+maintainer:     florent@hihan.org
+
+dependencies:
+- base
+- array
+- GPipe >=2.2
+- GPipe-GLFW >=1.4
+- lens
+- JuicyPixels
+- linear
+- containers
+- ObjectName
+- StateVar
+- filepath
+- hslogger
+- mtl
+- random
+- text
+- bytestring
+- regex-compat
+- time
+- vector
+- freetype2
+- parallel
+- rosezipper
+
+executables:
+  Hadron:
+    source-dirs:         src
+    main:                Main.hs
+    ghc-options:
+    - -threaded
