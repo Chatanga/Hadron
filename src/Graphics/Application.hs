@@ -99,15 +99,15 @@ animateUI frameDuration ui = do
 renderViewTree :: (Int, Int)
     -> Tree (View (ContextT GLFW.Handle os IO) (Maybe (Scene os)))
     -> ContextT GLFW.Handle os IO ()
-renderViewTree screenSize tree = do
-    let (screenWidth, screenHeigh) = screenSize
-        view = rootLabel tree
+renderViewTree screenSize viewTree = do
+    let (_, screenHeigh) = screenSize
+        view = rootLabel viewTree
     case viewContent view of
         Just scene -> do
             let ((x, y), (w, h)) = viewLocalBounds view
             sceneDisplay scene ((x, screenHeigh - h - y), (w, h))
         _ -> return ()
-    mapM_ (renderViewTree screenSize) (subForest tree)
+    mapM_ (renderViewTree screenSize) (subForest viewTree)
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -162,7 +162,7 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
     (_, timing) <- if elapsedSeconds > 0.25
         then do
             let fps = fromIntegral frameCount / elapsedSeconds
-            liftIO $ infoM "Hadron" ("FPS: " ++ showGFloat (Just 2) fps "")
+            liftIO $ debugM "Hadron" ("FPS: " ++ showGFloat (Just 2) fps "")
             return (Just fps, (0, mt2, mt2))
         else
             return (Nothing, (frameCount + 1, mt0, mt2))

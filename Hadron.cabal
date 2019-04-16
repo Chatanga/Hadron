@@ -2,7 +2,7 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: a2edbf06461dc4c0e950e1cea7fc64f2906a93db75dc1b4dedb8710d9804a2a4
+-- hash: 762f70ae6e831f5696684f804a98c857dd5a523cb5ecd0668e7cec7fce9c74f2
 
 name:           Hadron
 version:        1.0
@@ -24,6 +24,7 @@ executable Hadron
       Graphics.Layouts
       Graphics.RevolutionMesh
       Graphics.Scene
+      Graphics.Shader
       Graphics.Texture
       Graphics.View
       Graphics.World

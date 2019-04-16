@@ -1,4 +1,3 @@
-{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances #-}
 {-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies #-}
 
 module Graphics.World
@@ -18,7 +17,6 @@ module Graphics.World
 import Prelude hiding ((<*))
 
 import Control.Applicative (pure)
-import Control.Arrow
 import "lens" Control.Lens
 
 import Linear
@@ -26,6 +24,7 @@ import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
 import Graphics.Geometry
+import Graphics.Shader
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -36,7 +35,7 @@ data Stage
     deriving (Eq)
 
 class Renderable a where
-    toRenderables :: a -> ContextT GLFW.Handle os IO [ViewPort -> Render os ()]
+    toRenderables :: a -> ContextT GLFW.Handle os IO [ViewPort -> Stage -> Render os ()]
 
 data FireBall = FireBall
     { fireBallPosition :: !(V3 Float)
@@ -47,53 +46,6 @@ data FireBall = FireBall
 
 instance Renderable FireBall where
     toRenderables (FireBall p d (V3 cx cy cz) a) = undefined
-
-data DirectionLight = DirectionLight
-    { directionLightColor :: !(V3 Float)
-    , directionLightDirection :: !(V3 Float)
-    , directionLightAmbientIntensity :: !Float
-    } deriving (Show)
-
-data DirectionLightB = DirectionLightB
-    { directionLightColorB :: !(B3 Float)
-    , directionLightDirectionB :: !(B3 Float)
-    , directionLightAmbientIntensityB :: !(B Float)
-    }
-
-instance BufferFormat DirectionLightB where
-    type HostFormat DirectionLightB = DirectionLight
-    toBuffer = proc ~(DirectionLight c d i) -> do
-            (c', d', i') <- toBuffer -< (c, d, i)
-            returnA -< (DirectionLightB c' d' i')
-
-data DirectionLightS x = DirectionLightS
-    { directionLightColorS :: !(V3 (S x Float))
-    , directionLightDirectionS :: !(V3 (S x Float))
-    , directionLightAmbientIntensityS :: !(S x Float)
-    }
-
-instance UniformInput DirectionLightB where
-    type UniformFormat DirectionLightB x = DirectionLightS x
-    toUniform = proc ~(DirectionLightB c d i) -> do
-            (c', d', i') <- toUniform -< (c, d, i)
-            returnA -< (DirectionLightS c' d' i')
-
-instance VertexInput DirectionLight where
-    type VertexFormat DirectionLight = DirectionLightS V
-    toVertex = proc ~(DirectionLight c d i) -> do
-            (c', d', i') <- toVertex -< (c, d, i)
-            returnA -< (DirectionLightS c' d' i')
-
-instance FragmentInput (DirectionLightS V) where
-    type FragmentFormat (DirectionLightS V) = DirectionLightS F
-    toFragment = proc ~(DirectionLightS c d i) -> do
-            (c', d', i') <- toFragment -< (c, d, i)
-            returnA -< (DirectionLightS c' d' i')
-
-data PointLight = PointLight
-    { pointLightPosition :: !(V3 Float)
-    , pointLightColor :: !(V3 Float)
-    } deriving (Show)
 
 data ShadowShaderEnvironment = ShadowShaderEnvironment
     { shadowPrimitives :: PrimitiveArray Triangles (B3 Float, B3 Float)
@@ -111,10 +63,14 @@ data GridShaderEnvironment = GridShaderEnvironment
     , gridRasterOptions :: (Side, ViewPort, DepthRange)
     }
 
-type WorldUniform os = Buffer os (Uniform (V4 (B4 Float), V3 (B3 Float), DirectionLightB, (V4 (B4 Float))))
+-- type WorldUniform os = Buffer os (Uniform (V4 (B4 Float), V3 (B3 Float), DirectionLightB, V4 (B4 Float)))
+
+
+------------------------------------------------------------------------------------------------------------------------
 
 data World os = World
-    { worldUniform :: WorldUniform os
+    { worldShaderConfigUniformBuffer :: Buffer os (Uniform ShaderConfigB)
+    , worldPointLightUniformBuffer :: Buffer os (Uniform PointLightB)
     , worldRenderables :: ![ViewPort -> Stage -> Render os ()] -- Trop peu, pas assez.
     , worldFireBalls :: ![FireBall]
     , worldSun :: !DirectionLight
@@ -138,7 +94,8 @@ newTexture2D' format size level = do
 createWorld :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (World os)
 createWorld window = do
 
-    uniform :: WorldUniform os <- newBuffer 1
+    shaderConfigUniformBuffer :: Buffer os (Uniform ShaderConfigB) <- newBuffer 1
+    pointLightUniformBuffer :: Buffer os (Uniform PointLightB) <- newBuffer 8
 
     gridBuffer :: Buffer os (B3 Float) <- newBuffer 6
     writeBuffer gridBuffer 0
@@ -148,6 +105,10 @@ createWorld window = do
 
     wallBuffer :: Buffer os (B3 Float, B3 Float) <- newBuffer (length walls)
     writeBuffer wallBuffer 0 walls
+
+    let sphere' = map (\(V3 x y z, n) -> (V3 (x) (y) (z + 6), n)) (sphere 4)
+    sphereBuffer :: Buffer os (B3 Float, B3 Float) <- newBuffer (length sphere')
+    writeBuffer sphereBuffer 0 sphere'
 
     incalBuffer :: Buffer os (B3 Float, B3 Float) <- newBuffer (length incal)
     writeBuffer incalBuffer 0 incal
@@ -162,13 +123,15 @@ createWorld window = do
         makePrimArrays = do
             a <- toPrimitiveArray TriangleList <$> newVertexArray incalBuffer
             b <- toPrimitiveArray TriangleList <$> newVertexArray wallBuffer
-            return [a, b]
+            c <- toPrimitiveArray TriangleList <$> newVertexArray sphereBuffer
+            return [a, b, c]
 
-    shadowTex <- newTexture2D' Depth32F (V2 800 600) 1
+    shadowTex <- newTexture2D' Depth16 (V2 2048 2048) 1
     colorTex <- newTexture2D' RGB8 (V2 800 600) 1
 
     shadowShader <- compileShader $ do
-        (viewProjMat, _, _, _) <- getUniform (const (uniform, 0))
+        config <- getUniform (const (shaderConfigUniformBuffer, 0))
+        let viewProjMat = shaderConfigProjectionS config !*! shaderConfigCameraS config !*! shaderConfigTransformationS config
 
         triangles :: PrimitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream shadowPrimitives
         let
@@ -187,18 +150,29 @@ createWorld window = do
         drawDepth (\env -> (NoBlending, shadowImage env, depthOption)) shadowFragsWithDepth doDrawColor
 
     shader <- compileShader $ do
-        (viewProjMat :: V4 (V4 (S V Float)), normMat, sun :: DirectionLightS V, shadowMat) <- getUniform (const (uniform, 0))
+        config <- getUniform (const (shaderConfigUniformBuffer, 0))
+        let viewProjMat = shaderConfigProjectionS config !*! shaderConfigCameraS config !*! shaderConfigTransformationS config
+            camPos = shaderConfigCameraPositionS config
+            normMat = m44to33 (shaderConfigTransformationS config)
+            shadowMat = shaderConfigShadowS config
+            lightingContext =
+                ( camPos
+                , shaderConfigFogS config
+                , shaderConfigSunS config
+                , 0.8 -- material specular intensity
+                , 8 -- material specular power
+                )
 
         triangles :: PrimitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream primitives
         let
-            projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V3 VFloat, DirectionLightS V, V4 VFloat))
-            projectedTriangles = projWithShadow viewProjMat normMat sun shadowMat <$> triangles
+            projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V3 VFloat, V4 VFloat, V3 VFloat, LightingContext V))
+            projectedTriangles = projWithShadow viewProjMat normMat shadowMat lightingContext <$> triangles
 
         let samplerFilter = SamplerFilter Nearest Nearest Nearest Nothing
             edge = (pure ClampToEdge, 0)
         sampler <- newSampler2D (const (fst shadowTex, samplerFilter, edge))
 
-        fragNormals :: FragmentStream (V3 (S F Float), DirectionLightS F, V4 (S F Float)) <- rasterize rasterOptions projectedTriangles
+        fragNormals :: FragmentStream (V3 FFloat, V4 FFloat, V3 FFloat, LightingContext F) <- rasterize rasterOptions projectedTriangles
         let
             sampleTexture = sample2D sampler SampleAuto Nothing Nothing
             -- litFrags = filterFragments ((>* 0.5) . sampleTexture) fragNormals
@@ -209,37 +183,24 @@ createWorld window = do
             depthOption = DepthOption Less True
 
         drawWindowColorDepth (const (window, colorOption, depthOption)) litFragsWithDepth
-    
+
     gridShader <- compileShader $ do
-        (viewProjMat, _, _, _) <- getUniform (const (uniform, 0))
+        config <- getUniform (const (shaderConfigUniformBuffer, 0))
+        let viewProjMat = shaderConfigProjectionS config !*! shaderConfigCameraS config !*! shaderConfigTransformationS config
+            camPos = shaderConfigCameraPositionS config
 
         triangles :: PrimitiveStream Triangles (V3 VFloat) <- toPrimitiveStream gridPrimitives
         let
-            camPos = viewProjMat ^.column _w
-            projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V2 VFloat, VFloat))
+            projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V2 VFloat, VFloat, FogS V))
             projectedTriangles =
-                (\p -> (viewProjMat !* p, (v4To2 p, camPos^._z))) .
+                (\p -> (viewProjMat !* p, (v4To2 p, camPos ^._z, shaderConfigFogS config))) .
                 v3To4 .
                 (* 4000) <$> triangles
 
-        fragCoord :: FragmentStream (V2 FFloat, FFloat) <- rasterize gridRasterOptions projectedTriangles
+        fragCoord :: FragmentStream (V2 FFloat, FFloat, FogS F) <- rasterize gridRasterOptions projectedTriangles
         let
-            fogColor = V4 0.5 0.5 0.5 1
-            fogDensity = 0.2
-            (fogStart, fogEnd) = (10, 100)
-
-            getFogFactor :: S F Float -> S F Float
-            getFogFactor fogDistance = 1.0 - clamp factor 0.0 1.0 where
-                -- factor = (fogEnd - fogDistance) / (fogEnd - fogStart)
-                factor = exp (-fogDensity * fogDistance)
-                -- factor = exp (-pow (fogDensity * fogDistance, 2.0))
-                -- factor = 0.0
-
-            applyFog :: V4 (S F Float) -> S F Float -> V4 (S F Float)
-            applyFog color fogDistance = mix color fogColor (V4 a a a 0) where a = getFogFactor fogDistance
-
-            drawGridLine :: (V2 FFloat, FFloat) -> V4 (S F Float)
-            drawGridLine (p, camPosZ) = color' where
+            drawGridLine :: (V2 FFloat, FFloat, FogS F) -> V4 FFloat
+            drawGridLine (p, camPosZ, fog) = color' where
                 -- Pick a coordinate to visualize in a grid
                 coord = p / 40
                 -- Compute anti-aliased world-space grid lines
@@ -249,7 +210,7 @@ createWorld window = do
                 color = V4 1 0 0 (1 - minB (line) 1)
                 -- Add fog.
                 fogDistance = norm $ V3 (p^._x) (p^._y) camPosZ
-                color' = applyFog color (fogDistance * 0.01)
+                color' = applyFog fog color (fogDistance * 0.01)
 
             litFrags = drawGridLine <$> fragCoord
 
@@ -265,16 +226,16 @@ createWorld window = do
         drawWindowColorDepth (const (window, colorOption, depthOption)) litFragsWithDepth
 
     let
-        renderIncal viewPort ShadowMappingStage = do
+        renderObjects viewPort ShadowMappingStage = do
             sImage <- getTexture2DImage (fst shadowTex) 0
             clearImageDepth sImage 1
             primArray <- mconcat <$> makePrimArrays
-            shadowShader $ ShadowShaderEnvironment primArray sImage (FrontAndBack, viewPort, DepthRange 0 1)
-        renderIncal viewPort DirectShadingStage = do
+            shadowShader $ ShadowShaderEnvironment primArray sImage (Front, viewPort, DepthRange 0 1)
+        renderObjects viewPort DirectShadingStage = do
             clearWindowDepth window 1 -- Far plane
             primArray <- mconcat <$> makePrimArrays
-            shader $ ShaderEnvironment primArray (FrontAndBack, viewPort, DepthRange 0 1)
-        renderIncal _ _ = return ()
+            shader $ ShaderEnvironment primArray (Front, viewPort, DepthRange 0 1)
+        renderObjects _ _ = return ()
 
         renderGrid viewPort DirectShadingStage = do
             gridPrimArray <- makeGridPrimArray
@@ -282,14 +243,15 @@ createWorld window = do
         renderGrid _ _ = return ()
 
     let
-        -- sun = (DirectionLight (V3 0.6 0.8 1.0) (signorm (V3 0.5 0.75 1.0)) 1.0)
-        sun = (DirectionLight (V3 0.6 0.8 1.0) (- signorm (V3 20 5 15)) 1.0)
+        sun = (DirectionLight (V3 1.0 0.8 0.3) (- signorm (V3 20 5 15)) 0.1)
         world = World
-            uniform
-            [renderIncal, renderGrid]
+            shaderConfigUniformBuffer
+            pointLightUniformBuffer
+            [renderObjects, renderGrid]
             []
             sun
-            [("first-camera", Camera (V3 20 5 15) (pi/3) (-pi) (pi/3))]
+            -- [("first-camera", Camera (V3 20 5 15) (pi/3) (-pi) (pi/3))]
+            [("first-camera", Camera (V3 10 10 10) (pi/4) (pi*5/4) (pi/3))]
             0
             shadowTex
             colorTex
@@ -305,71 +267,78 @@ proj :: Floating a
 proj modelViewProj normMat sun (p, normal) =
     (modelViewProj !* v3To4 p, (normMat !* normal, sun))
 
+type LightingContext x =
+    ( V3 (S x Float) -- camPos
+    , FogS x
+    , DirectionLightS x -- sun
+    , S x Float -- material specular intensity
+    , S x Float -- material specular power
+    )
+
 projWithShadow :: Floating a
     => V4 (V4 a)
     -> V3 (V3 a)
-    -> DirectionLightS V
     -> V4 (V4 a)
+    -> LightingContext V
     -> (V3 a, V3 a)
-    -> (V4 a, (V3 a, DirectionLightS V, V4 a))
-projWithShadow modelViewProj normMat sun shadowMat (position, normal) =
+    -> (V4 a, (V3 a, V4 a, V3 a, LightingContext V))
+projWithShadow modelViewProj normMat shadowMat lightingContext (position, normal) =
     let p = v3To4 position
-    in  (modelViewProj !* p, (normMat !* normal, sun, shadowMat !* p))
+    -- TODO position is not transformed
+    in  (modelViewProj !* p, (normMat !* normal, shadowMat !* p, position, lightingContext))
 
-simpleLightWithShadow :: (V2 (S F Float) -> ColorSample F Depth)
-    -> (V3 (S F Float), DirectionLightS F, V4 (S F Float))
-    -> V4 (S F Float)
-simpleLightWithShadow shadowMap (normal, DirectionLightS color direction _, shadowCoord) =
-    let litColor = color * pure (normal `dot` (-direction))
-        shadow = getShadow shadowMap normal direction shadowCoord
-    in  v3To4 (litColor ^* shadow)
+simpleLightWithShadow :: (V2 FFloat -> ColorSample F Depth)
+    -> (V3 FFloat, V4 FFloat, V3 FFloat, LightingContext F)
+    -> V4 FFloat
+simpleLightWithShadow shadowMap (normal, shadowCoord, worldSpacePosition, lightingContext) =
+    let (cameraPosition, fog, sun, specularIntensity, specularPower) = lightingContext
+        DirectionLightS sunLightColor sunLightDirection sunLightAmbientIntensity = sun
+        cameraDirection = signorm (cameraPosition - worldSpacePosition)
+        baseColor = pure 1 -- V4 0.4 0.4 0.4 1
 
-{-
-    // Shadow.
-    float visibility;
-    if (shadowUsed == TRUE) {
-        vec4 shadowCoord = shadow * theWorldSpacePosition;
-        visibility = getVisibility3(normal, shadowCoord);
-    } else {
-        visibility = 1.0;
-    }
+        -- Sun
+        ambient = sunLightColor ^* sunLightAmbientIntensity
+        diffuse = sunLightColor ^* maxB 0 (dot normal (-sunLightDirection))
+        specular = getSpecularColor cameraDirection normal specularIntensity specularPower (sunLightColor * 1.5) (-sunLightDirection)
+        shadow = getShadow shadowMap normal (-sunLightDirection) shadowCoord
+        sunContribution = ambient + (diffuse + specular) ^* shadow
 
-    // Sunlight.
-    vec3 ambient = sunLightColor * sunLightAmbientIntensity;
-    vec3 diffuse = sunLightColor * max(0.0, dot(normal, normalize(-sunLightDirection)));
-    vec3 specular = getSpecularColor(theWorldSpacePosition, normal, specularIntensity, specularPower, sunLightColor, sunLightDirection);
-    vec4 fragColor = baseColor * vec4(ambient + (diffuse + specular) * visibility, 1.0);
+        -- Lights
+        lightContributions = pure 0
+        {-
+        lights :: [PointLight] = []
+        lightContributions = sum $ flip map lights $ \(lightPosition, lightColor) ->
+            lightDirection = normalize (lightPosition - worldSpacePosition)
+            lightDirection = length (lightPosition - worldSpacePosition)
+            attenuation = 0.01 + 0.07 * lightDistance + 0.00008 * lightDistance * lightDistance
 
-    // Light contributions.
-    for (int i = 0; i < min(10, lightCount); ++i) {
-        vec3 lightDirection = lightPositions[i] - theWorldSpacePosition.xyz;
-        float lightDistance = length(lightDirection);
-        float attenuation = 0.01 + 0.07 * lightDistance + 0.00008 * lightDistance * lightDistance;
+            diffuse = lightColor * maxB 0 (dot normal lightDirection)
+            specular = getSpecularColor cameraDirection normal specularIntensity specularPower lightColor lightDirection
+            baseColor * (diffuse + specular) / attenuation
+        -}
 
-        vec3 diffuse = lightColors[i] * max(0.0, dot(normal, normalize(lightDirection)));
-        vec3 specular = getSpecularColor(theWorldSpacePosition, normal, specularIntensity, specularPower, lightColors[i], lightDirection);
-        fragColor += baseColor * vec4((diffuse + specular) / attenuation, 0.0);
-    }
+    in  baseColor * (v3To4 sunContribution + lightContributions)
 
-    // Add fog.
-    float fogDistance = length(theCameraSpacePosition);
-    fragColor = applyFog(fragColor, fogDistance);
+getFogFactor :: FogS F -> FFloat -> FFloat
+getFogFactor fog fogDistance = 1 - clamp factor 0 1 where
+    -- factor = (fogEnd - fogDistance) / (fogEnd - fogStart)
+    factor = exp (-(fogDensityS fog) * fogDistance)
+    -- factor = exp (-pow (fogDensity * fogDistance, 2.0))
+    -- factor = 0.0
 
-    return fragColor;
--}
+applyFog :: FogS F -> V4 FFloat -> FFloat -> V4 FFloat
+applyFog fog color fogDistance = mix color (fogColorS fog) (V4 a a a 0) where a = getFogFactor fog fogDistance
 
-getSpecularColor :: V3 (S F Float)
-    -> V4 (S F Float)
-    -> V3 (S F Float)
-    -> S F Float
-    -> S F Float
-    -> V3 (S F Float)
-    -> V3 (S F Float)
-    -> V3 (S F Float)
-getSpecularColor cameraPosition worldSpacePosition normal specularIntensity specularPower lightColor rayDirection =
-    let bouncingRayDirection :: V3 (S F Float) = signorm (reflect rayDirection normal)
-        cameraDirection :: V3 (S F Float) = signorm (cameraPosition - v4To3 worldSpacePosition)
-        specularFactor :: S F Float = dot cameraDirection bouncingRayDirection
+getSpecularColor :: V3 FFloat
+    -> V3 FFloat
+    -> FFloat
+    -> FFloat
+    -> V3 FFloat
+    -> V3 FFloat
+    -> V3 FFloat
+getSpecularColor cameraDirection normal specularIntensity specularPower lightColor rayDirection =
+    let bouncingRayDirection = signorm (reflect (-rayDirection) normal)
+        specularFactor = dot cameraDirection bouncingRayDirection
 
     in ifThenElse' (specularFactor >* 0)
         (lightColor ^* (specularIntensity * (specularFactor ** specularPower)))
@@ -380,25 +349,25 @@ For a given incident vector I and surface normal N reflect returns the
 reflection direction calculated as I - 2.0 * dot(N, I) * N. N should be
 normalized in order to achieve the desired result. 
 -}
-reflect :: V3 (S F Float) -- ^ Specifies the incident vector. 
-    -> V3 (S F Float) -- ^ Specifies the normal vector. 
-    -> V3 (S F Float)
+reflect :: V3 FFloat -- ^ Specifies the incident vector. 
+    -> V3 FFloat -- ^ Specifies the normal vector. 
+    -> V3 FFloat
 reflect i n = i - 2 ^* dot n i * n
 
-getShadow :: (V2 (S F Float) -> ColorSample F Depth) -> V3 (S F Float) ->  V3 (S F Float) -> V4 (S F Float) -> S F Float
+getShadow :: (V2 FFloat -> ColorSample F Depth) -> V3 FFloat ->  V3 FFloat -> V4 FFloat -> FFloat
 getShadow shadowMap normal sunLightDirection (V4 x y z w) = maxB 0 visibility where
     rectify c = (c/w + 1) / 2
     texCoords = V2 (rectify x) (rectify y)
 
     cosTheta = clamp (dot normal sunLightDirection) 0 1
-    bias = clamp (0.0005 * tan (acos cosTheta)) 0 0.001
+    bias = clamp (0.005 * tan (acos cosTheta)) 0 0.01
 
     sample offset = shadowMap (texCoords + offset / 700)
     getContribution zShadow = ifThenElse' (zShadow <* rectify z - bias) 1 0
 
     visibility = 1 - 0.75 * sum ((getContribution . sample) <$> poissonDisk) / fromIntegral (length poissonDisk)
 
-poissonDisk :: [V2 (S F Float)]
+poissonDisk :: [V2 FFloat]
 poissonDisk =
    [ V2 (-0.94201624) (-0.39906216)
    , V2 (0.94558609) (-0.76890725)
@@ -422,10 +391,19 @@ v3To4 :: Floating a => V3 a -> V4 a
 v3To4 (V3 x y z) = V4 x y z 1
 
 v4To3 :: Floating a => V4 a -> V3 a
-v4To3 (V4 x y z _) = V3 x y z
+v4To3 (V4 x y z w) = V3 x y z
+
+v4To3' :: Floating a => V4 a -> V3 a
+v4To3' (V4 x y z w) = V3 (x/w) (y/w) (z/w)
 
 v4To2 :: Floating a => V4 a -> V2 a
 v4To2 (V4 x y _ _) = V2 x y
+
+v4To2' :: Floating a => V4 a -> V2 a
+v4To2' (V4 x y _ w) = V2 (x/w) (y/w)
+
+m44to33 :: Floating a => M44 a -> M33 a
+m44to33 = v4To3 . fmap v4To3
 
 shadowProj :: Floating a
     => V4 (V4 a)
@@ -433,33 +411,66 @@ shadowProj :: Floating a
     -> (V4 a, ())
 shadowProj modelViewProj (p, _) = (modelViewProj !* v3To4 p, ())
 
-walls :: [(V3 Float, V3 Float)]
+sphere :: Floating a => Int -> [(V3 a, V3 a)]
+sphere depth = zip vertices vertices where
+    x = 0.525731112119133606
+    z = 0.850650808352039932
+
+    rootVertices = map (\(x, y, z) -> V3 x y z)
+        [ (-x, 0, z), (x, 0, z), (-x, 0, -z), (x, 0, -z)
+        , (0, z, x), (0, z, -x), (0, -z, x), (0, -z, -x)
+        , (z, x, 0), (-z, x, 0), (z, -x, 0), (-z, -x , 0)
+        ]
+
+    indices =
+        [ (1, 4, 0), (4, 9, 0), (4, 5, 9), (8, 5, 4), (1, 8, 4)
+        , (1, 10, 8), (10, 3, 8), (8, 3, 5), (3, 2, 5), (3, 7, 2)
+        , (3, 10, 7), (10, 6, 7), (6, 11, 7), (6, 0, 11), (6, 1, 0)
+        , (10, 1, 6), (11, 0, 9), (2, 11, 9), (5, 2, 9), (11, 2, 7)
+        ]
+
+    divide 0 (p1, p2, p3) = map signorm [p1, p2, p3]
+    divide depth (p_1, p_2, p_3) =
+        let p12 = p_1 + p_2
+            p23 = p_2 + p_3
+            p31 = p_3 + p_1
+        in  concatMap (divide (depth - 1))
+            [ (p_1, p12, p31)
+            , (p12, p_2, p23)
+            , (p31, p23, p_3)
+            , (p12, p23, p31)
+            ]
+
+    getTriangle (i, j, k) = (rootVertices !! i, rootVertices !! j, rootVertices !! k)
+    vertices = concatMap (divide depth . getTriangle) indices
+
+walls :: Floating a => [(V3 a, V3 a)]
 walls = zip vertices (extractNormals vertices) where
     (p0, p1, p2, p3, p4, p5, p6) = (V3 0 0 0, V3 1 0 0, V3 0 1 0, V3 0 0 1, V3 1 1 0, V3 0 1 1, V3 1 0 1)
     vertices = map (\x -> x - V3 10 10 10) $ map (^* 20) $
-        [ p0, p2, p1
-        , p1, p2, p4
-        , p0, p3, p2
-        , p2, p3, p5
-        , p0, p1, p3
-        , p1, p6, p3
+        [ p0, p1, p2
+        , p1, p4, p2
+        , p0, p2, p3
+        , p2, p5, p3
+        , p0, p3, p1
+        , p1, p3, p6
         ]
 
 incal :: [(V3 Float, V3 Float)]
 incal = zip vertices (extractNormals vertices) where
     (pO, pA, pB, pC, pD) = (V3 0 0 2, V3 2 2 (-1), V3 (-2) 2 (-1), V3 (-2) (-2) (-1), V3 2 (-2) (-1))
     pyramid =
-        [ pA, pB, pD
-        , pC, pD, pB
-        , pA, pO, pB
-        , pB, pO, pC
-        , pC, pO, pD
-        , pD, pO, pA
+        [ pA, pD, pB
+        , pC, pB, pD
+        , pA, pB, pO
+        , pB, pC, pO
+        , pC, pD, pO
+        , pD, pA, pO
         ]
     vertices = map (^* 2) $ pyramid ++ map (rotate (axisAngle (V3 1 0 0) pi)) pyramid
 
 calculateTriangleNormal :: Floating a => V3 a -> V3 a -> V3 a -> V3 a
-calculateTriangleNormal p1 p2 p3 = signorm $ cross (p3 ^-^ p1) (p2 ^-^ p1)
+calculateTriangleNormal p1 p2 p3 = signorm $ cross (p2 ^-^ p1) (p3 ^-^ p1)
 
 extractNormals :: Floating a => [V3 a] -> [V3 a]
 extractNormals [] = []

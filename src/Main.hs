@@ -15,11 +15,11 @@ main = do
     h <- fileHandler "debug.log" DEBUG >>= \lh -> return $
         setFormatter lh (simpleLogFormatter "[$time : $loggername : $prio] $msg")
     -- updateGlobalLogger "Kage" (addHandler h)
-    updateGlobalLogger "Kage" (setLevel INFO)
+    updateGlobalLogger "Hadron" (setLevel INFO)
 
     let line = replicate 80 '─'
-    infoM "Kage" line
+    infoM "Hadron" line
 
     runApplication "Hadron"
 
-    infoM "Kage" line
+    infoM "Hadron" line
