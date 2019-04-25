@@ -1,3 +1,5 @@
+{-# LANGUAGE PackageImports #-}
+
 module Graphics.Geometry
     ( BoundingInfo(..)
     , Camera(..)
@@ -8,6 +10,7 @@ module Graphics.Geometry
     , getLeft
     , getUp
     , toWorld
+    , lookAt'
     --
     , noRotation
     , noTranslation
@@ -20,6 +23,8 @@ module Graphics.Geometry
     , showV3
     , showV4
     ) where
+
+import "lens" Control.Lens
 
 import Data.List
 
@@ -68,6 +73,22 @@ toWorld (w, h) (x, y) projection camera = rectify target where
     t = viewport !*! projection !*! camera
     target = inv44 t !* V4 x y 0 1
     rectify (V4 x y z w) = V4 (x / w) (y / w) (z / w) 1
+
+-- Copy of lookAt from linear with normalize replaced with signorm (faster? or
+-- without the epsilon constraint which is not fulfilled in shaders?).
+lookAt' :: Floating a => V3 a -> V3 a -> V3 a -> V4 (V4 a)
+lookAt' eye center up =
+    V4 (V4 (xa^._x)  (xa^._y)  (xa^._z)  xd)
+        (V4 (ya^._x)  (ya^._y)  (ya^._z)  yd)
+        (V4 (-za^._x) (-za^._y) (-za^._z) zd)
+        (V4 0         0         0          1)
+    where
+        za = signorm $ center - eye
+        xa = signorm $ cross za up
+        ya = cross xa za
+        xd = -dot xa eye
+        yd = -dot ya eye
+        zd = dot za eye
 
 ------------------------------------------------------------------------------------------------------------------------
 

@@ -4,8 +4,10 @@ module Graphics.Texture
     ( loadImage
     , saveDepthTexture
     , saveTexture
+    , generateNoiseTexture
     ) where
 
+import Control.Monad
 import Control.Monad.IO.Class
 import Data.Array
 
@@ -15,7 +17,25 @@ import Codec.Picture.Types
 import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
+import Common.Random
+
 ------------------------------------------------------------------------------------------------------------------------
+
+getFormatName :: DynamicImage -> (String, String)
+getFormatName dynamicImage = case dynamicImage of
+    ImageY8 _       -> ("Y8",       "a greyscale image")
+    ImageY16 _      -> ("Y16",      "a greyscale image with 16bit components")
+    ImageYF _       -> ("YF",       "a greyscale HDR image")
+    ImageYA8 _      -> ("YA8",      "an image in greyscale with an alpha channel")
+    ImageYA16 _     -> ("YA16",     "an image in greyscale with alpha channel on 16 bits")
+    ImageRGB8 _     -> ("RGB8",     "an image in true color")
+    ImageRGB16 _    -> ("RGB16",    "an image in true color with 16bit depth")
+    ImageRGBF _     -> ("RGBF",     "an image with HDR pixels")
+    ImageRGBA8 _    -> ("RGBA8",    "an image in true color and an alpha channel")
+    ImageRGBA16 _   -> ("RGBA16",   "a true color image with alpha on 16 bits")
+    ImageYCbCr8 _   -> ("YCbCr8",   "an image in the colorspace used by Jpeg images")
+    ImageCMYK8 _    -> ("CMYK8",    "an image in the colorspace CMYK")
+    ImageCMYK16 _   -> ("CMYK16",   "an image in the colorspace CMYK and 16 bits precision")
 
 loadImage :: String -> ContextT GLFW.Handle os IO (Maybe (Texture2D os (Format RGBFloat)))
 loadImage path = do
@@ -67,18 +87,12 @@ saveTexture (w, h) texture path = do
         image = generateImage getPixel w h
     liftIO $ savePngImage path (ImageRGBF image)
 
-getFormatName :: DynamicImage -> (String, String)
-getFormatName dynamicImage = case dynamicImage of
-    ImageY8 _       -> ("Y8",       "a greyscale image")
-    ImageY16 _      -> ("Y16",      "a greyscale image with 16bit components")
-    ImageYF _       -> ("YF",       "a greyscale HDR image")
-    ImageYA8 _      -> ("YA8",      "an image in greyscale with an alpha channel")
-    ImageYA16 _     -> ("YA16",     "an image in greyscale with alpha channel on 16 bits")
-    ImageRGB8 _     -> ("RGB8",     "an image in true color")
-    ImageRGB16 _    -> ("RGB16",    "an image in true color with 16bit depth")
-    ImageRGBF _     -> ("RGBF",     "an image with HDR pixels")
-    ImageRGBA8 _    -> ("RGBA8",    "an image in true color and an alpha channel")
-    ImageRGBA16 _   -> ("RGBA16",   "a true color image with alpha on 16 bits")
-    ImageYCbCr8 _   -> ("YCbCr8",   "an image in the colorspace used by Jpeg images")
-    ImageCMYK8 _    -> ("CMYK8",    "an image in the colorspace CMYK")
-    ImageCMYK16 _   -> ("CMYK16",   "an image in the colorspace CMYK and 16 bits precision")
+generateNoiseTexture :: (Int, Int) -> ContextT GLFW.Handle os IO (Texture2D os (Format RGBFloat))
+generateNoiseTexture (width, height) = do
+    noise <- liftIO $ replicateM (width * height) $ do
+        [x, y] <- replicateM 2 (runRandomIO $ getRandomR (0, 1)) :: IO [Float]
+        return (V3 (x * 2 - 1) (y * 2 - 1) 0)
+    let size = V2 width height
+    texture <- newTexture2D RGB16F size maxBound
+    writeTexture2D texture 0 0 size noise
+    return texture

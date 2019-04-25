@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies #-}
+{-# LANGUAGE PackageImports #-}
 
 module Graphics.Scene
     ( Scene(..)
@@ -8,7 +8,6 @@ module Graphics.Scene
     ) where
 
 import Control.Monad.State
-import "lens" Control.Lens
 
 import Data.Fixed
 import Data.IORef
@@ -31,10 +30,11 @@ import Graphics.Texture
 ------------------------------------------------------------------------------------------------------------------------
 
 data SceneContext os = SceneContext
-    { contextCameraName :: String
-    , contextCameraMoves :: !(Set.Set Move)
-    , contextCursorPosition :: (Float, Float)
-    , contextDrag :: Maybe (Float, Float)
+    { sceneContextCameraName :: String
+    , sceneContextCameraMoves :: !(Set.Set Move)
+    , sceneContextCursorPosition :: (Float, Float)
+    , sceneContextDrag :: Maybe (Float, Float)
+    , sceneContextRenderContext :: RenderContext os
     }
 
 data Move
@@ -59,11 +59,14 @@ createScene window worldRef contextRef = Scene
     (manipulate window worldRef contextRef)
 
 createSceneContext :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (SceneContext os)
-createSceneContext _ = return $ SceneContext
-    "first-camera"
-    Set.empty
-    (0, 0)
-    Nothing
+createSceneContext window = do
+    renderer <- createRenderer window
+    return $ SceneContext
+        "first-camera"
+        Set.empty
+        (0, 0)
+        Nothing
+        renderer
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -72,124 +75,19 @@ display :: Window os RGBAFloat Depth
     -> IORef (SceneContext os)
     -> ((Int, Int), (Int, Int))
     -> ContextT GLFW.Handle os IO ()
-display window worldRef contextRef size = do
+display window worldRef contextRef bounds = do
     world <- liftIO $ readIORef worldRef
-
-    fireBallObjects <- concat <$> mapM toRenderables (worldFireBalls world)
-
-    let lights = map (\(FireBall p _ c _) -> PointLight p c) (worldFireBalls world)
-        renderables = worldRenderables world
-
-    displayScene window world contextRef size lights (fireBallObjects ++ renderables)
-
-displayScene :: Window os RGBAFloat Depth
-    -> (World os)
-    -> IORef (SceneContext os)
-    -> ((Int, Int), (Int, Int))
-    -> [PointLight]
-    -> [ViewPort -> Stage -> Render os ()]
-    -> ContextT GLFW.Handle os IO ()
-displayScene _ world contextRef bounds lights renderables = do
     context <- liftIO $ readIORef contextRef
-    shadowMat <- renderShadow world context renderables
-    renderDirectly world context bounds shadowMat lights renderables
 
-renderShadow :: (World os)
-    -> SceneContext os
-    -> [ViewPort -> Stage -> Render os ()]
-    -> ContextT GLFW.Handle os IO (M44 Float)
-renderShadow world context renderables = do
-    let
-        (_, shadowTexSize) = worldDepthTex world
-        camera = fromJust (lookup (contextCameraName context) (worldCameras world))
+    let camera = fromJust (lookup (sceneContextCameraName context) (worldCameras world))
         sun = worldSun world
-        r = far / 50
-        projectionMat = ortho (-r) r (-r) r (-r) r
-        localPosition = V3 0 0 0
-        cameraMat = lookAt'
-            localPosition
-            (directionLightDirection sun)
-            (getUp camera)
-        biasMat = V4
-            (V4 0.5 0.0 0.0 0.5)
-            (V4 0.0 0.5 0.0 0.5)
-            (V4 0.0 0.0 0.5 0.5)
-            (V4 0.0 0.0 0.0 1.0)
-        -- shadowMat = biasMat !*! projectionMat !*! cameraMat
-        shadowMat = projectionMat !*! cameraMat
+        lights = map (\(FireBall p _ c _) -> PointLight p c) (worldFireBalls world)
+        buffers = worldBuffers world
+        renderContext = sceneContextRenderContext context
 
-    writeBuffer (worldShaderConfigUniformBuffer world) 0 [ShaderConfig
-        (cameraPosition camera)
-        projectionMat
-        cameraMat
-        identity -- Transformation
-        1 -- ShadowUsed
-        shadowMat
-        (Fog (V4 0.5 0.5 0.5 1) 10 100 0.2)
-        (worldSun world)
-        0 -- TimePassed
-        ]
+    newRenderContext <- (renderContextRenderAction renderContext) renderContext bounds camera sun lights buffers
 
-    writeBuffer (worldPointLightUniformBuffer world) 0 []
-
-    let viewPort = ViewPort (V2 0 0) shadowTexSize
-    mapM_ (\r -> render (r viewPort ShadowMappingStage)) renderables
-
-    return shadowMat
-
-renderDirectly :: (World os)
-    -> SceneContext os
-    -> ((Int, Int), (Int, Int))
-    -> M44 Float
-    -> [PointLight]
-    -> [ViewPort -> Stage -> Render os ()]
-    -> ContextT GLFW.Handle os IO ()
-renderDirectly world context bounds shadowMat lights renderables = do
-    let
-        ((x, y), (w, h)) = bounds
-        camera = fromJust (lookup (contextCameraName context) (worldCameras world))
-        -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-        projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) near far
-        -- Eye, Center, Up
-        cameraMat = lookAt
-            (cameraPosition camera)
-            (cameraPosition camera + getSight camera)
-            (getUp camera)
-
-    writeBuffer (worldShaderConfigUniformBuffer world) 0 [ShaderConfig
-        (cameraPosition camera)
-        projectionMat
-        cameraMat
-        identity -- Transformation
-        0 -- ShadowUsed
-        shadowMat
-        (Fog (V4 0.5 0.5 0.5 1) 10 100 0.2)
-        (worldSun world)
-        0 -- TimePassed
-        ]
-
-    writeBuffer (worldPointLightUniformBuffer world) 0 lights
-
-    let viewPort = ViewPort (V2 x y) (V2 w h)
-    -- See https://github.com/tobbebex/GPipe-Core/issues/50
-    -- render $ mapM_ (\r -> r viewPort) renderables
-    mapM_ (\r -> render (r viewPort DirectShadingStage)) renderables
-
--- Copy of lookAt from linear with normalize replaced with signorm (faster? or
--- without the epsilon constraint which is not fulfilled in shaders?).
-lookAt' :: Floating a => V3 a -> V3 a -> V3 a -> V4 (V4 a)
-lookAt' eye center up =
-    V4 (V4 (xa^._x)  (xa^._y)  (xa^._z)  xd)
-        (V4 (ya^._x)  (ya^._y)  (ya^._z)  yd)
-        (V4 (-za^._x) (-za^._y) (-za^._z) zd)
-        (V4 0         0         0          1)
-    where
-        za = signorm $ center - eye
-        xa = signorm $ cross za up
-        ya = cross xa za
-        xd = -dot xa eye
-        yd = -dot ya eye
-        zd = dot za eye
+    liftIO $ writeIORef contextRef (context{ sceneContextRenderContext = newRenderContext })
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -209,7 +107,7 @@ animate window worldRef contextRef (_, height) timeDelta = do
                 , cameraAzimuth = az'
                 , cameraPosition = position }
             where
-                moves = contextCameraMoves context
+                moves = sceneContextCameraMoves context
                 keyMoves =
                     [ (GoUp, getUp camera)
                     , (GoDown, - (getUp camera))
@@ -223,7 +121,7 @@ animate window worldRef contextRef (_, height) timeDelta = do
                     else p
                 position = foldl applyMove (cameraPosition camera) keyMoves
                 (alt, az) = (cameraAltitude camera, cameraAzimuth camera)
-                (alt', az') = case contextDrag context of
+                (alt', az') = case sceneContextDrag context of
                     Nothing -> (alt, az)
                     Just (dx, dy) -> (alt', az') where
                         ratio = cameraFov camera / realToFrac height
@@ -233,10 +131,10 @@ animate window worldRef contextRef (_, height) timeDelta = do
 
     let for = flip map
         cameras = for (worldCameras world) $ \(n, c) ->
-            if n == contextCameraName context then (n, moveCamera c) else (n, c)
+            if n == sceneContextCameraName context then (n, moveCamera c) else (n, c)
 
     liftIO $ writeIORef worldRef world{ worldCameras = cameras }
-    liftIO $ writeIORef contextRef context{ contextDrag = Nothing }
+    liftIO $ writeIORef contextRef context{ sceneContextDrag = Nothing }
     return $ createScene window worldRef contextRef
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -254,19 +152,31 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
     -- Exit application on Escape.
     | k == GLFW.Key'Escape = return Nothing
 
-    -- Exit application on Escape.
+    -- Save intermediate buffer rendering into a file.
     | k == GLFW.Key'P && ks == GLFW.KeyState'Pressed = do
-        world <- liftIO $ readIORef worldRef
-        let (tex, (V2 w h)) = worldDepthTex world
-        saveDepthTexture (w, h) tex "shadowmap.png"
-        liftIO $ infoM "Hadron" "Shadow map saved"
+        context <- liftIO $ readIORef contextRef
+        let Just (_, frameBufferGroup) = renderContextFrameBufferGroup (sceneContextRenderContext context)
+            tex = frameBufferGroupOcclusionTex frameBufferGroup
+            V2 w h = texture2DSizes tex !! 0
+        saveDepthTexture (w, h) tex "occlusion.png"
+        liftIO $ infoM "Hadron" "Depth map saved"
+        return $ Just (createScene window worldRef contextRef)
+
+    -- Save intermediate buffer rendering into a file.
+    | k == GLFW.Key'O && ks == GLFW.KeyState'Pressed = do
+        context <- liftIO $ readIORef contextRef
+        let Just (_, frameBufferGroup) = renderContextFrameBufferGroup (sceneContextRenderContext context)
+            tex = frameBufferGroupPositionTex frameBufferGroup
+            V2 w h = texture2DSizes tex !! 0
+        saveTexture (w, h) tex "position.png"
+        liftIO $ infoM "Hadron" "Color buffer saved"
         return $ Just (createScene window worldRef contextRef)
 
     -- Move the camera using WASD keys (note that the keyboard layout is not taken into account).
     | otherwise = do
         context <- liftIO $ readIORef contextRef
         let
-            moves = contextCameraMoves context
+            moves = sceneContextCameraMoves context
             handleKey = if ks == GLFW.KeyState'Released then Set.delete else Set.insert
             moves' = case k of
                 GLFW.Key'Space -> handleKey GoUp moves
@@ -276,21 +186,21 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
                 GLFW.Key'A -> handleKey GoLeft moves
                 GLFW.Key'D -> handleKey GoRight moves
                 _ -> moves
-        liftIO $ writeIORef contextRef context{ contextCameraMoves = moves' }
+        liftIO $ writeIORef contextRef context{ sceneContextCameraMoves = moves' }
         return $ Just (createScene window worldRef contextRef)
 
 -- Rotate the camera by dragging the mouse.
 manipulate window worldRef contextRef _ (EventDrag dx dy) = do
     context <- liftIO $ readIORef contextRef
-    let drag = (\(x, y) -> (x + realToFrac dx, y + realToFrac dy)) $ fromMaybe (0, 0) (contextDrag context)
-    liftIO $ writeIORef contextRef context{ contextDrag = Just drag }
+    let drag = (\(x, y) -> (x + realToFrac dx, y + realToFrac dy)) $ fromMaybe (0, 0) (sceneContextDrag context)
+    liftIO $ writeIORef contextRef context{ sceneContextDrag = Just drag }
     return $ Just (createScene window worldRef contextRef)
 
 -- Shot randomly colored fire balls with the mouse right button.
 manipulate window worldRef contextRef size (EventMouseButton b bs _) = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
-    let camera = fromJust (lookup (contextCameraName context) (worldCameras world))
+    let camera = fromJust (lookup (sceneContextCameraName context) (worldCameras world))
     newFireBalls <- if b == GLFW.MouseButton'2 && bs == GLFW.MouseButtonState'Pressed
         then do
             let (width, height) = size
@@ -299,7 +209,7 @@ manipulate window worldRef contextRef size (EventMouseButton b bs _) = do
                     (cameraPosition camera)
                     (cameraPosition camera + getSight camera)
                     (getUp camera)
-                cursor = contextCursorPosition context
+                cursor = sceneContextCursorPosition context
                 (V4 x y z _) = toWorld (width, height) cursor projectionMat cameraMat
                 direction = normalize (V3 x y z - cameraPosition camera)
             color <- liftIO $ runRandomIO $ V3
@@ -315,7 +225,7 @@ manipulate window worldRef contextRef size (EventMouseButton b bs _) = do
 -- Store the cursor location.
 manipulate window worldRef contextRef _ (EventCursorPos x y) = do
     context <- liftIO $ readIORef contextRef
-    liftIO $ writeIORef contextRef context{ contextCursorPosition = (realToFrac x, realToFrac y) }
+    liftIO $ writeIORef contextRef context{ sceneContextCursorPosition = (realToFrac x, realToFrac y) }
     return $ Just (createScene window worldRef contextRef)
 
 -- Catch everything else.
