@@ -422,13 +422,13 @@ createRenderer window = do
                 dImage <- getTexture2DImage depthTex 0
                 pImage <- getTexture2DImage positionTex 0
                 nImage <- getTexture2DImage normalTex 0
-                aImage <- getTexture2DImage materialTex 0
+                mImage <- getTexture2DImage materialTex 0
                 clearImageDepth dImage 1
                 clearImageColor pImage 0
                 clearImageColor nImage 0
-                clearImageColor aImage 0
+                clearImageColor mImage 0
                 primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
-                compiledDeferredShader $ DeferredShaderEnvironment primArray dImage pImage nImage aImage (Front, viewPort, DepthRange 0 1)
+                compiledDeferredShader $ DeferredShaderEnvironment primArray dImage pImage nImage mImage (Front, viewPort, DepthRange 0 1)
                 
             -- SSAO
             render $ do
@@ -557,7 +557,7 @@ data DeferredShaderEnvironment os = DeferredShaderEnvironment
     }
 
 deferredShader :: Window os RGBAFloat Depth -> Buffer os (Uniform ShaderConfigB) -> Shader os (DeferredShaderEnvironment os) ()
-deferredShader _ shaderConfigUniformBuffer = do
+deferredShader window shaderConfigUniformBuffer = do
     config <- getUniform (const (shaderConfigUniformBuffer, 0))
     let viewProjMat = shaderConfigProjectionS config !*! shaderConfigCameraS config !*! shaderConfigTransformationS config
 
@@ -566,7 +566,7 @@ deferredShader _ shaderConfigUniformBuffer = do
         projGeometry (position, normal) =
             let p = v3To4 position 1
             -- TODO position is not transformed
-            in  (viewProjMat !* p, (position, normal, V4 0.7 0.7 0.7 1.0))
+            in  (viewProjMat !* p, (position, normal, pure 1))
 
         projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V3 VFloat, V3 VFloat, V4 VFloat))
         projectedTriangles = projGeometry <$> triangles
@@ -581,6 +581,8 @@ deferredShader _ shaderConfigUniformBuffer = do
         drawColor (\env -> (deferredShaderPositionImage env, pure True, False)) p
         drawColor (\env -> (deferredShaderNormalImage env, pure True, False)) n
         drawColor (\env -> (deferredShaderMaterialImage env, pure True, False)) c
+
+    drawWindowDepth (const (window, depthOption)) (snd <$> geometryFragsWithDepth)
 
 data SsaoShaderEnvironment os = SsaoShaderEnvironment
     { screenToDepthPrimitives :: PrimitiveArray Triangles (B2 Float)
@@ -646,7 +648,7 @@ ssaoShader _ shaderConfigUniformBuffer = do
 
             tangent = signorm (noise - normal ^* dot noise normal)
             bitangent = cross normal tangent
-            tbn = V3 tangent bitangent normal
+            tbn = transpose $ V3 tangent bitangent normal
 
             kernelTexSize = sampler1DSize kernelSampler 0
 
@@ -656,8 +658,8 @@ ssaoShader _ shaderConfigUniformBuffer = do
 
                 sample = kernelSample (toFloat i / toFloat kernelTexSize)
 
-                radius = 0.25
-                bias = 0.001
+                radius = 2
+                bias = 0.01
 
                 -- From tangent to view-space
                 samplePosition = position + v3To4 ((tbn !* sample) ^* radius) 0
@@ -667,9 +669,7 @@ ssaoShader _ shaderConfigUniformBuffer = do
 
                 position' = cameraMat !* v3To4 (positionSample texCoords') 1
 
-                -- rangeCheck = smoothstep 0 1 (radius / abs (position^._z - position'^._z))
-                -- rangeCheck = smoothstep 0 1 (abs (position^._z - position'^._z))
-                rangeCheck = 1
+                rangeCheck = smoothstep 0 1 (radius / abs (position^._z - position'^._z))
 
                 contribution = (ifThenElse' (position'^._z >=* samplePosition^._z + bias) 1 0) * rangeCheck
 
@@ -821,27 +821,26 @@ lightingShader window shaderConfigUniformBuffer = do
 
         V2 w h = toFloat <$> sampler2DSize positionSampler 0
 
-        litFragsWithDepth = (flip withRasterizedInfo) frags $ \_ f ->
+        litFrags = (flip withRasterizedInfo) frags $ \_ f ->
             let (V4 x y _ _) = rasterizedFragCoord f
                 texCoords = V2 (x / w) (y / h)
                 position = positionSample texCoords
                 normal = normalSample texCoords
-                _ = materialSample texCoords
+                material = materialSample texCoords
                 occlusion = occlusionSample texCoords
                 lighting = lightWithShadow
                     shadowSample
                     (normMat !* normal)
                     (shadowMat !* v3To4 position 1)
                     position
+                    material
                     occlusion
                     lightingContext
-                p = viewProjMat !* v3To4 position 1
-            in  (lighting, 0)
+            in  lighting
 
         colorOption = ContextColorOption NoBlending (pure True)
-        depthOption = DepthOption Less True
 
-    drawWindowColorDepth (const (window, colorOption, depthOption)) litFragsWithDepth
+    drawWindowColor (const (window, colorOption)) litFrags
 
 data GridShaderEnvironment = GridShaderEnvironment
     { gridPrimitives :: PrimitiveArray Triangles (B3 Float)
@@ -905,7 +904,7 @@ simpleLightWithShadow shadowSample (normal, shadowCoord, renderContextSpacePosit
     let (cameraPosition, fog, sun, specularIntensity, specularPower) = lightingContext
         DirectionLightS sunLightColor sunLightDirection sunLightAmbientIntensity = sun
         cameraDirection = signorm (cameraPosition - renderContextSpacePosition)
-        baseColor = pure 1 -- V4 0.4 0.4 0.4 1
+        baseColor = pure 1
 
         -- Sun
         ambient = sunLightColor ^* sunLightAmbientIntensity
@@ -914,34 +913,21 @@ simpleLightWithShadow shadowSample (normal, shadowCoord, renderContextSpacePosit
         shadow = getShadow shadowSample normal (-sunLightDirection) shadowCoord
         sunContribution = ambient + (diffuse + specular) ^* shadow
 
-        -- Lights
-        lightContributions = pure 0
-        {-
-        lights :: [PointLight] = []
-        lightContributions = sum $ flip map lights $ \(lightPosition, lightColor) ->
-            lightDirection = normalize (lightPosition - renderContextSpacePosition)
-            lightDirection = length (lightPosition - renderContextSpacePosition)
-            attenuation = 0.01 + 0.07 * lightDistance + 0.00008 * lightDistance * lightDistance
-
-            diffuse = lightColor * maxB 0 (dot normal lightDirection)
-            specular = getSpecularColor cameraDirection normal specularIntensity specularPower lightColor lightDirection
-            baseColor * (diffuse + specular) / attenuation
-        -}
-
-    in  baseColor * (v3To4 sunContribution 1 + lightContributions)
+    in  baseColor * (v3To4 sunContribution 1)
 
 lightWithShadow :: (V2 FFloat -> ColorSample F Depth)
     -> V3 FFloat
     -> V4 FFloat
     -> V3 FFloat
+    -> V4 FFloat
     -> FFloat
     -> LightingContext F
     -> V4 FFloat
-lightWithShadow shadowSample normal shadowCoord renderContextSpacePosition occlusion lightingContext =
+lightWithShadow shadowSample normal shadowCoord renderContextSpacePosition material occlusion lightingContext =
     let (cameraPosition, fog, sun, specularIntensity, specularPower) = lightingContext
         DirectionLightS sunLightColor sunLightDirection sunLightAmbientIntensity = sun
         cameraDirection = signorm (cameraPosition - renderContextSpacePosition)
-        baseColor = pure 1 -- V4 0.4 0.4 0.4 1
+        baseColor = material^._xyz
 
         -- Sun
         ambient = sunLightColor ^* sunLightAmbientIntensity
@@ -964,7 +950,9 @@ lightWithShadow shadowSample normal shadowCoord renderContextSpacePosition occlu
             baseColor * (diffuse + specular) / attenuation
         -}
 
-    in  v3To4 (baseColor * (sunContribution + lightContributions) * pure occlusion) 1
+        color = v3To4 (baseColor * (sunContribution + lightContributions) ^* occlusion) 1
+
+    in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
 
 getFogFactor :: FogS F -> FFloat -> FFloat
 getFogFactor fog fogDistance = 1 - clamp factor 0 1 where

@@ -14,7 +14,7 @@ main = do
 
     h <- fileHandler "debug.log" DEBUG >>= \lh -> return $
         setFormatter lh (simpleLogFormatter "[$time : $loggername : $prio] $msg")
-    -- updateGlobalLogger "Kage" (addHandler h)
+    -- updateGlobalLogger "Hadron" (addHandler h)
     updateGlobalLogger "Hadron" (setLevel INFO)
 
     let line = replicate 80 '─'

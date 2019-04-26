@@ -51,7 +51,7 @@ createWorld window = do
 
     return $ World
         []
-        (DirectionLight (V3 1.0 0.8 0.3) (- signorm (V3 20 5 15)) 0.1)
+        (DirectionLight (V3 1.0 0.8 0.3 ^* 0.8) (- signorm (V3 20 5 15)) 0.1)
         [("first-camera", Camera (V3 10 10 10) (pi/4) (pi*5/4) (pi/3))]
         0
         [incalBuffer, wallBuffer, sphereBuffer]
