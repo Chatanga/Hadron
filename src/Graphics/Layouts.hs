@@ -36,9 +36,9 @@ fixedLayout (w, h) = Layout
     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 -}
 
-data BordelLayouPosition = Center | Top | Left | Bottom | Right
+data BordelLayoutPosition = Center | Top | Left | Bottom | Right
 
-borderLayout :: [BordelLayouPosition] -> Layout m a
+borderLayout :: [BordelLayoutPosition] -> Layout m a
 borderLayout positions = undefined -- TODO
 
 {-

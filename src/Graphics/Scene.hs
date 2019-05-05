@@ -83,9 +83,10 @@ display window worldRef contextRef bounds = do
         sun = worldSun world
         lights = map (\(FireBall p _ c _) -> PointLight p c) (worldFireBalls world)
         buffers = worldBuffers world
+        normalBuffers = worldNormalBuffers world
         renderContext = sceneContextRenderContext context
 
-    newRenderContext <- (renderContextRenderAction renderContext) renderContext bounds camera sun lights buffers
+    newRenderContext <- (renderContextRenderAction renderContext) renderContext bounds camera sun lights buffers normalBuffers
 
     liftIO $ writeIORef contextRef (context{ sceneContextRenderContext = newRenderContext })
 

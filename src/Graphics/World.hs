@@ -14,6 +14,7 @@ import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
 import Graphics.Geometry
 import Graphics.Shader
+import Graphics.RevolutionMesh
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -32,6 +33,7 @@ data World os = World
     , worldCameras :: ![(String, Camera)]
     , worldElapsedTime :: !Double
     , worldBuffers :: ![Buffer os (B3 Float, B3 Float)]
+    , worldNormalBuffers :: ![Buffer os (B3 Float)]
     }
 
 type DurationInMs = Double
@@ -49,12 +51,29 @@ createWorld window = do
     incalBuffer <- newBuffer (length incal)
     writeBuffer incalBuffer 0 incal
 
+    {-
+    let cylinder = uncurry zip $ generateMeshFromProfile 12 profile1
+    cylinderBuffer <- newBuffer (length cylinder)
+    writeBuffer cylinderBuffer 0 cylinder
+    -}
+
+    let
+        createNormalBuffer :: [(V3 Float, V3 Float)] -> ContextT GLFW.Handle os IO (Buffer os (B3 Float))
+        createNormalBuffer mesh = do
+            let normals = concatMap (\(p, n) -> [p, p + n]) mesh
+            normalBuffer <- newBuffer (length normals)
+            writeBuffer normalBuffer 0 normals
+            return normalBuffer
+
+    incalNormalBuffer <- createNormalBuffer incal
+
     return $ World
         []
         (DirectionLight (V3 1.0 0.8 0.3 ^* 0.8) (- signorm (V3 20 5 15)) 0.1)
         [("first-camera", Camera (V3 10 10 10) (pi/4) (pi*5/4) (pi/3))]
         0
         [incalBuffer, wallBuffer, sphereBuffer]
+        []
 
 animateWorld :: DurationInMs -> World os -> ContextT GLFW.Handle os IO (World os)
 animateWorld timeDelta world = return world' where
