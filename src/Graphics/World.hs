@@ -38,7 +38,7 @@ data World os = World
 
 type DurationInMs = Double
 
-createWorld :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (World os)
+createWorld :: Window os f Depth -> ContextT GLFW.Handle os IO (World os)
 createWorld window = do
 
     wallBuffer <- newBuffer (length walls)

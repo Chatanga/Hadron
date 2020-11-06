@@ -7,6 +7,7 @@ module Graphics.Shader
     , PointLight(..)
     , FogEquation(..)
     , Fog(..)
+    , FogB(..), FogS(..), applyFog -- temporary
     , ShaderConfig(..)
     , FrameBufferGroup(..)
     , RenderContext(..)
@@ -170,7 +171,7 @@ instance FragmentInput (FogS V) where
 
 data ShaderConfig = ShaderConfig
     { shaderConfigCameraPosition :: !(V3 Float)
-    
+
     , shaderConfigProjection :: !(M44 Float)
     , shaderConfigCamera :: !(M44 Float)
     , shaderConfigTransformation :: !(M44 Float)
@@ -186,7 +187,7 @@ data ShaderConfig = ShaderConfig
 
 data ShaderConfigB = ShaderConfigB
     { shaderConfigCameraPositionB :: !(B3 Float)
-    
+
     , shaderConfigProjectionB :: !(V4 (B4 Float))
     , shaderConfigCameraB :: !(V4 (B4 Float))
     , shaderConfigTransformationB :: !(V4 (B4 Float))
@@ -208,7 +209,7 @@ instance BufferFormat ShaderConfigB where
 
 data ShaderConfigS x = ShaderConfigS
     { shaderConfigCameraPositionS :: !(V3 (S x Float))
-    
+
     , shaderConfigProjectionS :: !(M44 (S x Float))
     , shaderConfigCameraS :: !(M44 (S x Float))
     , shaderConfigTransformationS :: !(M44 (S x Float))
@@ -254,7 +255,7 @@ data FrameBufferGroup os = FrameBufferGroup
     , frameBufferGroupHdrColorTex :: Texture2D os (Format RGBFloat)
     , frameBufferGroupLdrColorTex :: Texture2D os (Format RGBFloat)
     , frameBufferGroupBloomColorTex :: Texture2D os (Format RGBFloat)
-    -}        
+    -}
     }
 
 data RenderContext os = RenderContext
@@ -411,7 +412,7 @@ createRenderer window = do
             {- I don’t know if having multiple calls to 'render' is a workaround
             to some bugs (see https://github.com/tobbebex/GPipe-Core/issues/50)
             or something with a well defined behavior (some error messages give
-            this advice, especially when trying to use a same texture as an
+            this advice, especially when trying to use the same texture as an
             input and output).
             -}
 
@@ -434,14 +435,14 @@ createRenderer window = do
                 clearImageColor mImage 0
                 primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
                 compiledDeferredShader $ DeferredShaderEnvironment viewPort primArray dImage pImage nImage mImage
-                
+
             -- SSAO
             render $ do
                 oImage <- getTexture2DImage occlusionTex 0
                 clearImageDepth oImage 1
                 screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
                 compiledSsaoShader $ SsaoShaderEnvironment viewPort screenPrimArray oImage positionTex normalTex sampleKernelTex noiseTex
-                
+
             -- SSAO Bluring
             render $ do
                 bImage <- getTexture2DImage blurredOcclusionTex 0
@@ -474,7 +475,7 @@ createRenderer window = do
 
             -- Debug: normals
             render $ do
-                normalPrimArray <- mconcat <$> mapM (fmap (toPrimitiveArray LineList) . newVertexArray) normalBuffers
+                normalPrimArray <- mconcat <$> mapM (fmap (toPrimitiveArray LineStrip) . newVertexArray) normalBuffers
                 compiledNormalShader $ NormalShaderEnvironment viewPort normalPrimArray
 
             -- Post (direct rendering)
@@ -629,8 +630,8 @@ ssaoShader _ shaderConfigUniformBuffer = do
         (ssaoShaderNormalTex env, SamplerFilter Nearest Nearest Nearest Nothing, (pure ClampToEdge, 0))
     kernelSampler <- newSampler1D $ \env ->
         (ssaoShaderKernelTex env, SamplerFilter Nearest Nearest Nearest Nothing, (ClampToEdge, 0))
-    noiseSampler <- newSampler2D $
-        \env -> (ssaoShaderNoiseTex env, SamplerFilter Nearest Nearest Nearest Nothing, (pure Repeat, 0))
+    noiseSampler <- newSampler2D $ \env ->
+        (ssaoShaderNoiseTex env, SamplerFilter Nearest Nearest Nearest Nothing, (pure Repeat, 0))
 
     frags :: FragmentStream () <- rasterize getRasterOptions triangles
     let
@@ -866,7 +867,7 @@ gridShader window shaderConfigUniformBuffer = do
 data ScreenShaderEnvironment os = ScreenShaderEnvironment
     { screenViewport :: ViewPort
     , screenPrimitives :: PrimitiveArray Triangles (B2 Float)
-    , screenDepthTex :: Texture2D os (Format Depth)    
+    , screenDepthTex :: Texture2D os (Format Depth)
     }
 
 screenShader :: Window os RGBAFloat Depth -> Shader os (ScreenShaderEnvironment os) ()
@@ -981,7 +982,7 @@ getLight shadowSample normal renderContextSpacePosition material occlusion light
 
         diffuse = lightColor ^* maxB 0 (dot normal lightDirection)
         specular = getSpecularColor cameraDirection normal specularIntensity specularPower lightColor lightDirection
-        
+
         lightContribution = (baseColor * diffuse + specular) ^/ attenuation
 
         color = v3To4 (lightContribution ^* occlusion) 1
@@ -1018,10 +1019,10 @@ getSpecularColor cameraDirection normal specularIntensity specularPower lightCol
 {- | Calculate the reflection direction for an incident vector.
 For a given incident vector I and surface normal N reflect returns the
 reflection direction calculated as I - 2.0 * dot(N, I) * N. N should be
-normalized in order to achieve the desired result. 
+normalized in order to achieve the desired result.
 -}
-reflect :: V3 FFloat -- ^ Specifies the incident vector. 
-    -> V3 FFloat -- ^ Specifies the normal vector. 
+reflect :: V3 FFloat -- ^ Specifies the incident vector.
+    -> V3 FFloat -- ^ Specifies the normal vector.
     -> V3 FFloat
 reflect i n = i - 2 ^* dot n i * n
 

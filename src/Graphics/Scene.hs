@@ -26,6 +26,7 @@ import Graphics.View
 import Graphics.Shader
 import Graphics.World
 import Graphics.Texture
+import Graphics.Polygonisation
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -52,7 +53,7 @@ data Scene os = Scene
     , sceneManipulate :: (Float, Float) -> Event -> ContextT GLFW.Handle os IO (Maybe (Scene os)) -- ^ nothing => exit
     }
 
-createScene :: Window os RGBAFloat Depth -> IORef (World os) -> IORef (SceneContext os) -> Scene os
+createScene :: Window os f Depth -> IORef (World os) -> IORef (SceneContext os) -> Scene os
 createScene window worldRef contextRef = Scene
     (display window worldRef contextRef)
     (animate window worldRef contextRef)
@@ -60,7 +61,7 @@ createScene window worldRef contextRef = Scene
 
 createSceneContext :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (SceneContext os)
 createSceneContext window = do
-    renderer <- createRenderer window
+    renderer <- createPolygonisationRenderer window
     return $ SceneContext
         "first-camera"
         Set.empty
@@ -70,7 +71,7 @@ createSceneContext window = do
 
 ------------------------------------------------------------------------------------------------------------------------
 
-display :: Window os RGBAFloat Depth
+display :: Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext os)
     -> ((Int, Int), (Int, Int))
@@ -92,7 +93,7 @@ display window worldRef contextRef bounds = do
 
 ------------------------------------------------------------------------------------------------------------------------
 
-animate :: Window os RGBAFloat Depth
+animate :: Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext os)
     -> (Float, Float)
@@ -118,7 +119,7 @@ animate window worldRef contextRef (_, height) timeDelta = do
                     , (GoBack, - (getSight camera))
                     ]
                 applyMove p (m, dp) = if Set.member m moves
-                    then p + dp * realToFrac timeDelta * 10
+                    then p + dp * realToFrac timeDelta * 50
                     else p
                 position = foldl applyMove (cameraPosition camera) keyMoves
                 (alt, az) = (cameraAltitude camera, cameraAzimuth camera)
@@ -140,7 +141,7 @@ animate window worldRef contextRef (_, height) timeDelta = do
 
 ------------------------------------------------------------------------------------------------------------------------
 
-manipulate :: Window os RGBAFloat Depth
+manipulate :: Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext os)
     -> (Float, Float)

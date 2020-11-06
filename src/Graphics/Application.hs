@@ -1,4 +1,4 @@
-{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE PackageImports, FlexibleContexts  #-}
 
 module Graphics.Application
     ( runApplication
@@ -18,6 +18,7 @@ import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
 
+import Graphics.Color
 import Graphics.Layouts
 import Graphics.Scene
 import Graphics.View
@@ -61,7 +62,7 @@ sceneHandleEvent event treeLoc =
 
 type ScenicUI os = UI (ContextT GLFW.Handle os IO) (Maybe (Scene os))
 
-createScenicUI :: Window os RGBAFloat Depth
+createScenicUI :: Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext os)
     -> (ScenicUI os)
@@ -75,7 +76,7 @@ createScenicUI window currentWorld currentContext = createUI ui where
         Node (createViewWithParams False adaptativeLayout handleEvent Nothing)
         [   Node (createViewWithParams True (anchorLayout topRighCorner) handleEvent (Just masterScene))
             [   -- Node (createViewWithParams False (fixedLayout (250, 250)) handleEvent  (Just radarScene)) []
-            ]        
+            ]
         ]
     topRighCorner = [AnchorConstraint (Just 50) (Just 50) Nothing Nothing]
 
@@ -133,7 +134,7 @@ runApplication name = runContextT GLFW.defaultHandleConfig $ do
             ui <- liftIO $ readIORef uiRef
             ui' <- processEvent ui event
             liftIO $ writeIORef uiRef ui'
-            liftIO $ writeIORef quitRef (uiTerminated ui')            
+            liftIO $ writeIORef quitRef (uiTerminated ui')
 
     -- Collect and queue incoming events.
     GLFW.setKeyCallback window $ Just $ \k n ks mk ->

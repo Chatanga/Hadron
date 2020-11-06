@@ -1,0 +1,16 @@
+cradle:
+  stack:
+    - path: "./src"
+      component: "Hadron:exe:Hadron"
+
+    - path: "../GPipe-Core/GPipe-Core/src"
+      component: "GPipe:lib"
+
+    - path: "../GPipe-Core/GPipe-Core/playground"
+      component: "GPipe:exe:playground"
+
+    - path: "../GPipe-Core/GPipe-Core/test/internal"
+      component: "GPipe:test:white-box"
+
+    - path: "../GPipe-GLFW/GPipe-GLFW/src"
+      component: "GPipe-GLFW:lib"
