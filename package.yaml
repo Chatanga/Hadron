@@ -33,4 +33,5 @@ executables:
     source-dirs:         src
     main:                Main.hs
     ghc-options:
+    - -j4
     - -threaded
