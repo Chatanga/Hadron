@@ -18,7 +18,6 @@ import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
 
-import Graphics.Color
 import Graphics.Layouts
 import Graphics.Scene
 import Graphics.View

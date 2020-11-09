@@ -5,6 +5,7 @@ module Graphics.Texture
     , saveDepthTexture
     , saveTexture
     , generateNoiseTexture
+    , generate3DNoiseTexture
     ) where
 
 import Control.Monad
@@ -42,7 +43,7 @@ loadImage path = do
     let loadPixels image = do
             let size = V2 (imageWidth image) (imageHeight image)
             texture <- newTexture2D SRGB8 size maxBound -- JPG converts to SRGB
-            let getJuicyPixel xs _x _y pix = let PixelRGB8 r g b = convertPixel pix in V3 r g b : xs   
+            let getJuicyPixel xs _x _y pix = let PixelRGB8 r g b = convertPixel pix in V3 r g b : xs
             writeTexture2D texture 0 0 size (pixelFold getJuicyPixel [] image)
             return (Just texture)
 
@@ -93,6 +94,15 @@ generateNoiseTexture (width, height) = do
         [x, y] <- replicateM 2 (runRandomIO $ getRandomR (0, 1)) :: IO [Float]
         return (V3 (x * 2 - 1) (y * 2 - 1) 0)
     let size = V2 width height
-    texture <- newTexture2D RGB16F size maxBound
+    texture <- newTexture2D RGB16F size 1 -- maxBound
     writeTexture2D texture 0 0 size noise
+    return texture
+
+generate3DNoiseTexture :: (Int, Int, Int) -> ContextT GLFW.Handle os IO (Texture3D os (Format RFloat))
+generate3DNoiseTexture (width, height, depth) = do
+    noise <- liftIO $ replicateM (width * height * depth) $ do
+        runRandomIO $ (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: IO Float
+    let size = V3 width height depth
+    texture <- newTexture3D R16F size 1
+    writeTexture3D texture 0 0 size noise
     return texture

@@ -61,6 +61,7 @@ createScene window worldRef contextRef = Scene
 
 createSceneContext :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (SceneContext os)
 createSceneContext window = do
+    -- renderer <- createRenderer window
     renderer <- createPolygonisationRenderer window
     return $ SceneContext
         "first-camera"

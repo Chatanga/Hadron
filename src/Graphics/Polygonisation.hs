@@ -22,7 +22,7 @@ import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 import Common.Debug
 import Graphics.Shader
 import Graphics.Geometry
-import Graphics.Shader
+import Graphics.Texture
 
 ----------------------------------------------------------------------------------------------------------------------
 
@@ -36,8 +36,9 @@ import Graphics.Shader
 createFillDensityRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Buffer os (Uniform (B3 Float)) ->
     Texture3D os (Format RFloat) ->
+    [Texture3D os (Format RFloat)] ->
     ContextT ctx os m (Render os ())
-createFillDensityRenderer offsetBuffer densityTexture = do
+createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
     let (V3 size _ _) = head (texture3DSizes densityTexture)
 
     planeBuffer :: Buffer os (B2 Float) <- newBuffer 6
@@ -48,7 +49,11 @@ createFillDensityRenderer offsetBuffer densityTexture = do
 
     shader :: CompiledShader os (Image (Format RFloat), PrimitiveArray Triangles (B Float, B2 Float))  <- compileShader $ do
 
-        V3 dx dy dz <- getUniform (const (offsetBuffer, 0))
+        offset@(V3 dx dy dz) <- getUniform (const (offsetBuffer, 0))
+
+        let filterMode = SamplerFilter Linear Linear Linear (Just 4)
+            edgeMode = (pure Repeat, undefined)
+        noiseSamplers <- forM noiseTextures $ \t -> newSampler3D (const (t, filterMode, edgeMode))
 
         ps :: primitiveStream Triangles ((VFloat, V2 VFloat), VInt) <- toPrimitiveStream snd
             <&> withInputIndices (\p indices -> (p, inputInstanceID indices))
@@ -68,16 +73,24 @@ createFillDensityRenderer offsetBuffer densityTexture = do
         fs <- generateAndRasterize rasterOptions 3 gs'
             <&> withRasterizedInfo (\h info -> let V4 x y _ _ = rasterizedFragCoord info in V3 x y h)
 
+        -- TODO Bug in my geometry shader support: not using every varying will lead to a crash.
+
         {-
-        let toV3 x y z = 1 / (1 + abs (x*x + y*y + z*z - 1000) / 20)
+        let toV3 x y z = x*x + y*y + z*z - 1200
             fs' = (\(V3 x y z) -> toV3 (x + dx - 10) (y + dy + 3) (z + dz - 10)) <$> fs
         -}
 
-        let toV3 x y z = x*x + y*y + z*z - 1000
-            fs' = (\(V3 x y z) -> toV3 (x + dx - 10) (y + dy + 3) (z + dz - 10)) <$> fs
-
-        -- let fs' = (\(V3 x y z) -> minB 1 . maxB 0 $ x - 5) <$> fs -- Leads to a crash.
-        -- let fs' = (\(V3 x y z) -> minB 1 . maxB 0 $ (x*0) + (y*0) + (-z+dz) + 10) <$> fs
+        let sample i p a b = sample3D (noiseSamplers !! i) SampleAuto Nothing Nothing (p * a / 256) * b
+            f p =
+                let p' = p + offset
+                in  p'^._z / 32
+                    + sample 0 p' 4.03 0.25
+                    + sample 1 p' 1.96 0.50
+                    + sample 2 p' 1.01 1.00
+                    -- + sample 3 p' 0.80 1.25
+                    -- + sample 4 p' 0.50 1.50
+                    -- + sample 5 p' 0.10 2.00
+            fs' = f <$> fs
 
         draw (const NoBlending) fs' $
             drawColor (\env -> (fst env, True, False))
@@ -170,13 +183,13 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                                 a = minB 1 . maxB 0 $ (d1 - threshold) / (d1 - d2)
                                 -- a = (d1 - threshold) / (d1 - d2)
                             p1 = calculatePoint i0 j0
-                            p2 = calculatePoint i2 j2
-                            p3 = calculatePoint i1 j1
+                            p2 = calculatePoint i1 j1
+                            p3 = calculatePoint i2 j2
                             n = signorm (cross (p3 - p1) (p3 - p2))
                         in  endPrimitive .
                             emitVertex (p1, n) .
-                            emitVertex (p2, n) .
-                            emitVertex (p3, n)
+                            emitVertex (p3, n) .
+                            emitVertex (p2, n)
 
             gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = gs <&> makeTriangles
 
@@ -198,12 +211,9 @@ createBlockRenderer window projectionBuffer = do
         let modelViewProj = projectionMat !*! cameraMat
 
         ps :: primitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream' (Just (fst . snd)) (snd . snd)
-        let ps' :: primitiveStream Triangles (VPos, V3 VFloat) = ps <&> \(p, n) ->
-                let p' = modelViewProj !* (point p)
-                    n' = modelViewProj !* vector n
-                in  (p', v4To3 n')
+        let ps' :: primitiveStream Triangles (VPos, V3 VFloat) = ps <&> \(p, n) -> (modelViewProj !* point p, n)
 
-        let rasterOptions = \(size, _) -> (FrontAndBack, ViewPort 0 size, DepthRange 0 1)
+        let rasterOptions = \(size, _) -> (Front, ViewPort 0 size, DepthRange 0 1)
         fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions ps' <&> withRasterizedInfo (\n p ->
                 let c = getSunlight n (V4 0.5 0.8 0.2 1)
                 in  (c, rasterizedFragCoord p ^. _z))
@@ -271,16 +281,14 @@ getSunlight normal material =
 
         color = v3To4 sunContribution 1
 
-    in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
+    -- in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
+    in  color
 
 v3To4 :: Floating a => V3 a -> a -> V4 a
 v3To4 (V3 x y z) w = V4 x y z w
 
 v4To3 :: Floating a => V4 a -> V3 a
 v4To3 (V4 x y z _) = V3 x y z
-
-v4To3' :: Floating a => V4 a -> V3 a
-v4To3' (V4 x y z w) = V3 (x/w) (y/w) (z/w)
 
 createGridRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
@@ -358,9 +366,9 @@ createPolygonisationRenderer window = do
     projectionBuffer :: Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) <- newBuffer 1
     offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
     densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure (blockSize + 1)) 1
-    let blockBufferSize = blockSize^3 * 4 * 3 * 2 `div` 60
+    noiseTextures :: [Texture3D os (Format RFloat)] <- replicateM 3 (generate3DNoiseTexture (16, 16, 16))
 
-    fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture
+    fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture noiseTextures
     generateCell <- createGenerateBlockRenderer window offsetBuffer densityTexture
     blockRenderer <- createBlockRenderer window projectionBuffer
     blockOutlineRenderer <- createBlockOutlineRenderer window offsetBuffer projectionBuffer
@@ -375,8 +383,8 @@ createPolygonisationRenderer window = do
             writeBuffer offsetBuffer 0 [offset]
             render (generateCell blockBuffer)
 
-    let offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-2 .. 1], y <- [-2 .. 1], z <- [-1 .. 1] ]
-    -- let offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [0], y <- [0], z <- [0] ]
+    let blockBufferSize = blockSize^3 * 4 * 3 * 2 `div` 10
+        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 0] ]
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
 
     forM_ (zip offsets blockBuffers) $ \(offset, blockBuffer) -> do
