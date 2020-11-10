@@ -84,13 +84,15 @@ createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
         let sample i p a b = sample3D (noiseSamplers !! i) SampleAuto Nothing Nothing (p * a / 256) * b
             f p =
                 let p' = p + offset
-                in  p'^._z / 32
+                    density = p'^._z / 64
+                    -- density = (norm p' - 80) / 32
+                in  density
                     + sample 0 p' 4.03 0.25
                     + sample 1 p' 1.96 0.50
                     + sample 2 p' 1.01 1.00
-                    -- + sample 3 p' 0.80 1.25
-                    -- + sample 4 p' 0.50 1.50
-                    -- + sample 5 p' 0.10 2.00
+                    + sample 3 p' 0.80 1.25
+                    + sample 4 p' 0.50 1.50
+                    + sample 5 p' 0.10 2.00
             fs' = f <$> fs
 
         draw (const NoBlending) fs' $
@@ -193,12 +195,10 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                             calculatePoint :: V3 VInt -> V3 VInt -> V3 VFloat
                             calculatePoint v1 v2 = offset + (1 - a) *^ (toFloat <$> v1) + a *^ (toFloat <$> v2) where
                                 (d1, d2) = (getDensity v1, getDensity v2)
-                                a = minB 1 . maxB 0 $ (d1 - threshold) / (d1 - d2)
-                                -- a = (d1 - threshold) / (d1 - d2)
+                                a = (d1 - threshold) / (d1 - d2)
                             p1 = calculatePoint i0 j0
                             p2 = calculatePoint i1 j1
                             p3 = calculatePoint i2 j2
-                            -- n = signorm (cross (p3 - p1) (p3 - p2))
                         in  endPrimitive .
                             emitVertex (p1, getNormal p1) .
                             emitVertex (p3, getNormal p3) .
@@ -256,7 +256,7 @@ createBlockOutlineRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, M
     Window os RGBAFloat Depth ->
     Buffer os (Uniform (B3 Float)) ->
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
-    ContextT ctx os m (V2 Int -> Render os ())
+    ContextT ctx os m (V2 Int -> Int -> Render os ())
 createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
 
     blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length floatCube)
@@ -266,13 +266,13 @@ createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
     blockOutlineIndexBuffer :: Buffer os (BPacked Word8) <- newBuffer (length edges)
     writeBuffer blockOutlineIndexBuffer 0 (map fromIntegral edges)
 
-    shader :: CompiledShader os (V2 Int, PrimitiveArray Lines (B3 Float))  <- compileShader $ do
+    shader :: CompiledShader os (V2 Int, (Int, PrimitiveArray Lines (B3 Float)))  <- compileShader $ do
         (projectionMat, cameraMat, _) <- getUniform (const (projectionBuffer, 0))
         let modelViewProj = projectionMat !*! cameraMat
 
-        offset <- getUniform (const (offsetBuffer, 0))
+        offset <- getUniform (\env -> (offsetBuffer, fst (snd env)))
 
-        lines :: PrimitiveStream Lines (V3 VFloat) <- toPrimitiveStream snd
+        lines :: PrimitiveStream Lines (V3 VFloat) <- toPrimitiveStream (snd . snd)
         let
             projectedLines :: PrimitiveStream Lines (V4 VFloat, ())
             projectedLines =
@@ -288,11 +288,11 @@ createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
             depthOption = DepthOption Less True
         drawWindowColorDepth (const (window, colorOption, depthOption)) fs
 
-    return $ \size -> do
+    return $ \size offsetIndex -> do
         blockOutline <- toPrimitiveArrayIndexed LineList
             <$> newIndexArray blockOutlineIndexBuffer Nothing
             <*> newVertexArray blockOutlineBuffer
-        shader (size, blockOutline)
+        shader (size, (offsetIndex, blockOutline))
 
 createGridRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
@@ -366,13 +366,16 @@ createGridRenderer window projectionBuffer fogBuffer = do
 createPolygonisationRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
 createPolygonisationRenderer window = do
     let blockSize = 32
+        blockBufferSize = blockSize^3 * 4 * 3 * 2 -- `div` 10
+        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-2 .. 1] ]
+        -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-3 .. 2] ]
 
     fogBuffer :: Buffer os (Uniform FogB) <- newBuffer 1
     sunBuffer :: Buffer os (Uniform DirectionLightB) <- newBuffer 1
     projectionBuffer :: Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) <- newBuffer 1
-    offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
+    offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer (length offsets)
     densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure (blockSize + 1)) 1
-    noiseTextures :: [Texture3D os (Format RFloat)] <- replicateM 3 (generate3DNoiseTexture (16, 16, 16))
+    noiseTextures :: [Texture3D os (Format RFloat)] <- take 6 . cycle <$> replicateM 3 (generate3DNoiseTexture (16, 16, 16))
 
     fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture noiseTextures
     generateCell <- createGenerateBlockRenderer window offsetBuffer densityTexture
@@ -389,8 +392,8 @@ createPolygonisationRenderer window = do
             writeBuffer offsetBuffer 0 [offset]
             render (generateCell blockBuffer)
 
-    let blockBufferSize = blockSize^3 * 4 * 3 * 2 `div` 10
-        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-4 .. 3], y <- [-4 .. 3], z <- [-1 .. 0] ]
+    writeBuffer offsetBuffer 0 offsets
+
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
 
     forM_ (zip offsets blockBuffers) $ \(offset, blockBuffer) -> do
@@ -418,22 +421,14 @@ createPolygonisationRenderer window = do
                     (cameraPos + getSight camera)
                     (getUp camera)
                 cameraPos = cameraPosition camera
-
             writeBuffer projectionBuffer 0 [(projectionMat, cameraMat, cameraPos)]
+
             render $ do
                 clearWindowColor window (v3To4 skyBlue 1)
                 clearWindowDepth window 1
                 forM_ blockBuffers $ \blockBuffer -> blockRenderer (V2 w h, blockBuffer)
-
-            -- TODO Instanced rendering?
-            {-
-            forM_ offsets $ \offset -> do
-                writeBuffer offsetBuffer 0 [offset]
-                render $ do
-                    blockOutlineRenderer (V2 w h)
-            -}
-
-            render $ gridRenderer (V2 w h)
+                forM_ [0 .. length offsets - 1] $ \i -> blockOutlineRenderer (V2 w h) i
+                gridRenderer (V2 w h)
 
             return $ RenderContext Nothing renderIt
 
