@@ -13,7 +13,7 @@ import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
 import Graphics.Geometry
-import Graphics.Shader
+import Graphics.Shaders
 import Graphics.RevolutionMesh
 
 ------------------------------------------------------------------------------------------------------------------------

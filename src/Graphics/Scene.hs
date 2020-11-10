@@ -23,7 +23,8 @@ import Common.Random
 
 import Graphics.Geometry
 import Graphics.View
-import Graphics.Shader
+import Graphics.Incal
+import Graphics.Shaders
 import Graphics.World
 import Graphics.Texture
 import Graphics.Polygonisation
@@ -61,7 +62,7 @@ createScene window worldRef contextRef = Scene
 
 createSceneContext :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (SceneContext os)
 createSceneContext window = do
-    -- renderer <- createRenderer window
+    -- renderer <- createIncalRenderer window
     renderer <- createPolygonisationRenderer window
     return $ SceneContext
         "first-camera"

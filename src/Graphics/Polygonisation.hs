@@ -20,9 +20,10 @@ import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Debug
-import Graphics.Shader
+import Graphics.Shaders
 import Graphics.Geometry
 import Graphics.Texture
+import Graphics.Color
 
 ----------------------------------------------------------------------------------------------------------------------
 
@@ -139,6 +140,8 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
 
         offset <- getUniform (const (offsetBuffer, 0))
 
+        floatDensitySampler <- newSampler3D (const (densityTexture, SamplerFilter Linear Linear Linear (Just 4), (pure ClampToEdge, undefined)))
+
         densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
         aritySampler <- newSampler1D (const (arityTexture, SamplerNearest, (ClampToEdge, undefined)))
         caseSampler <- newSampler2D (const (casesTexture, SamplerNearest, (pure ClampToEdge, undefined)))
@@ -175,6 +178,16 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                         (\(i, gg) -> (i+1, (emitTriangle (i-1)) gg)) -- TODO Generated code seems to have a bug: i is modified with side effect.
                         (0, generativeTriangleStrip)
 
+                    getNormal :: V3 VFloat -> V3 VFloat
+                    getNormal p = normal where
+                        p' = p - offset
+                        sample = sample3D floatDensitySampler (SampleLod 0) Nothing Nothing . (/ 32) . (p' +)
+                        grad = V3
+                            (sample (V3 1 0 0) - sample (V3 (-1) 0 0))
+                            (sample (V3 0 1 0) - sample (V3 0 (-1) 0))
+                            (sample (V3 0 0 1) - sample (V3 0 0 (-1)))
+                        normal = signorm grad
+
                     emitTriangle i =
                         let [i0, j0, i1, j1, i2, j2] = [ p + getCase (V2 (i * 6 + fromIntegral o) cellCase) | o <- [0..5] ]
                             calculatePoint :: V3 VInt -> V3 VInt -> V3 VFloat
@@ -185,11 +198,11 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                             p1 = calculatePoint i0 j0
                             p2 = calculatePoint i1 j1
                             p3 = calculatePoint i2 j2
-                            n = signorm (cross (p3 - p1) (p3 - p2))
+                            -- n = signorm (cross (p3 - p1) (p3 - p2))
                         in  endPrimitive .
-                            emitVertex (p1, n) .
-                            emitVertex (p3, n) .
-                            emitVertex (p2, n)
+                            emitVertex (p1, getNormal p1) .
+                            emitVertex (p3, getNormal p3) .
+                            emitVertex (p2, getNormal p2)
 
             gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = gs <&> makeTriangles
 
@@ -203,20 +216,33 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
 createBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
+    Buffer os (Uniform FogB) ->
+    Buffer os (Uniform DirectionLightB) ->
     ContextT ctx os m ((V2 Int, Buffer os (B3 Float, B3 Float)) -> Render os ())
-createBlockRenderer window projectionBuffer = do
+createBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
     shader :: CompiledShader os (V2 Int, (Buffer os (B3 Float, B3 Float), PrimitiveArray Triangles (B3 Float, B3 Float)))  <- compileShader $ do
 
-        (projectionMat, cameraMat, _) <- getUniform (const (projectionBuffer, 0))
+        (projectionMat, cameraMat, cameraPos) <- getUniform (const (projectionBuffer, 0))
         let modelViewProj = projectionMat !*! cameraMat
 
         ps :: primitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream' (Just (fst . snd)) (snd . snd)
-        let ps' :: primitiveStream Triangles (VPos, V3 VFloat) = ps <&> \(p, n) -> (modelViewProj !* point p, n)
+        let ps' :: primitiveStream Triangles (VPos, (V3 VFloat, V3 VFloat, V3 VFloat)) = ps <&> \(p, n) -> (modelViewProj !* point p, (p, n, cameraPos))
+
+        fog :: FogS F <- getUniform (const (fogBuffer, 0))
+        sun :: DirectionLightS F <- getUniform (const (sunBuffer, 0))
 
         let rasterOptions = \(size, _) -> (Front, ViewPort 0 size, DepthRange 0 1)
-        fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions ps' <&> withRasterizedInfo (\n p ->
-                let c = getSunlight n (V4 0.5 0.8 0.2 1)
-                in  (c, rasterizedFragCoord p ^. _z))
+        fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions ps' <&> withRasterizedInfo (\(p, n, cp) ri ->
+                let lightingContext =
+                        ( cp
+                        , fog
+                        , sun
+                        , 0.8 -- material specular intensity
+                        , 8 -- material specular power
+                        )
+                    material = V4 1 0.1 0.2 1
+                    c = getSunlight undefined n Nothing p material 1 lightingContext
+                in  (c, rasterizedFragCoord ri ^. _z))
 
         let colorOption = ContextColorOption NoBlending (pure True)
             depthOption = DepthOption Less True
@@ -268,33 +294,12 @@ createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
             <*> newVertexArray blockOutlineBuffer
         shader (size, blockOutline)
 
-getSunlight :: V3 FFloat -> V4 FFloat -> V4 FFloat
-getSunlight normal material =
-    let sunLightColor = V3 0.5 0.5 0.5
-        sunLightAmbientIntensity = 0.8
-        sunLightDirection = - V3 1 1 0
-        baseColor = material^._xyz
-
-        ambient = sunLightColor ^* sunLightAmbientIntensity
-        diffuse = sunLightColor ^* maxB 0 (dot normal (-sunLightDirection))
-        sunContribution = baseColor * ambient + baseColor * diffuse
-
-        color = v3To4 sunContribution 1
-
-    -- in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
-    in  color
-
-v3To4 :: Floating a => V3 a -> a -> V4 a
-v3To4 (V3 x y z) w = V4 x y z w
-
-v4To3 :: Floating a => V4 a -> V3 a
-v4To3 (V4 x y z _) = V3 x y z
-
 createGridRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
+    Buffer os (Uniform FogB) ->
     ContextT ctx os m (V2 Int -> Render os ())
-createGridRenderer window projectionBuffer = do
+createGridRenderer window projectionBuffer fogBuffer = do
     let grid =
             [ V3 1 1 0,  V3 (-1) 1 0,  V3 1 (-1) 0
             , V3 (-1) (-1) 0,  V3 1 (-1) 0,  V3 (-1) 1 0
@@ -317,12 +322,11 @@ createGridRenderer window projectionBuffer = do
 
             getRasterOptions (size, _) = (FrontAndBack, ViewPort 0 size, DepthRange 0 1)
 
+        fog <- getUniform (const (fogBuffer, 0))
         fragCoord :: FragmentStream (V2 FFloat, FFloat) <- rasterize getRasterOptions projectedTriangles
         let
             drawGridLine :: (V2 FFloat, FFloat) -> V4 FFloat
             drawGridLine (p@(V2 x y), camPosZ) = color' where
-                fog = FogS (V4 0.5 0.5 0.5 1) 10 100 0.2
-                -- fog = FogS (V4 0 0 0 1) 10 100 0.4
                 -- Pick a coordinate to visualize in a grid.
                 (coord, coord') = (p / 32, p / 320)
                 -- Compute anti-aliased renderContext-space grid lines.
@@ -363,6 +367,8 @@ createPolygonisationRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handl
 createPolygonisationRenderer window = do
     let blockSize = 32
 
+    fogBuffer :: Buffer os (Uniform FogB) <- newBuffer 1
+    sunBuffer :: Buffer os (Uniform DirectionLightB) <- newBuffer 1
     projectionBuffer :: Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) <- newBuffer 1
     offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
     densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure (blockSize + 1)) 1
@@ -370,9 +376,9 @@ createPolygonisationRenderer window = do
 
     fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture noiseTextures
     generateCell <- createGenerateBlockRenderer window offsetBuffer densityTexture
-    blockRenderer <- createBlockRenderer window projectionBuffer
+    blockRenderer <- createBlockRenderer window projectionBuffer fogBuffer sunBuffer
     blockOutlineRenderer <- createBlockOutlineRenderer window offsetBuffer projectionBuffer
-    gridRenderer <- createGridRenderer window projectionBuffer
+    gridRenderer <- createGridRenderer window projectionBuffer fogBuffer
 
     let generateCellFromOffset offset blockBuffer = do
             writeBuffer offsetBuffer 0 [offset]
@@ -384,14 +390,15 @@ createPolygonisationRenderer window = do
             render (generateCell blockBuffer)
 
     let blockBufferSize = blockSize^3 * 4 * 3 * 2 `div` 10
-        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 0] ]
+        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-4 .. 3], y <- [-4 .. 3], z <- [-1 .. 0] ]
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
 
     forM_ (zip offsets blockBuffers) $ \(offset, blockBuffer) -> do
         generateCellFromOffset offset blockBuffer
 
-    let renderIt :: Int
-            -> RenderContext os
+    writeBuffer fogBuffer 0 [Fog (v3To4 skyBlue 1) 10 100 0.2]
+
+    let renderIt :: RenderContext os
             -> ((Int, Int), (Int, Int))
             -> Camera
             -> DirectionLight
@@ -399,7 +406,9 @@ createPolygonisationRenderer window = do
             -> [Buffer os (B3 Float, B3 Float)]
             -> [Buffer os (B3 Float)]
             -> ContextT GLFW.Handle os IO (RenderContext os)
-        renderIt i _ bounds camera _ _ _ _ = do
+        renderIt _ bounds camera sun lights buffers normalBuffers = do
+            writeBuffer sunBuffer 0 [sun]
+
             let (_ , (w, h)) = bounds
                 -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
                 projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) near far
@@ -412,21 +421,23 @@ createPolygonisationRenderer window = do
 
             writeBuffer projectionBuffer 0 [(projectionMat, cameraMat, cameraPos)]
             render $ do
-                -- clearWindowColor window 0
+                clearWindowColor window (v3To4 skyBlue 1)
                 clearWindowDepth window 1
                 forM_ blockBuffers $ \blockBuffer -> blockRenderer (V2 w h, blockBuffer)
 
             -- TODO Instanced rendering?
+            {-
             forM_ offsets $ \offset -> do
                 writeBuffer offsetBuffer 0 [offset]
                 render $ do
                     blockOutlineRenderer (V2 w h)
+            -}
 
             render $ gridRenderer (V2 w h)
 
-            return $ RenderContext Nothing (renderIt (i+1))
+            return $ RenderContext Nothing renderIt
 
-    return (RenderContext Nothing (renderIt 0))
+    return (RenderContext Nothing renderIt)
 
 findConvexSubGraphs :: (a -> [a] -> Bool) -> [a] -> [[a]]
 findConvexSubGraphs _ [] = []

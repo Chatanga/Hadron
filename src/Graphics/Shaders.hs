@@ -2,16 +2,44 @@
 {-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Graphics.Shader
-    ( DirectionLight(..)
-    , PointLight(..)
+module Graphics.Shaders
+    ( DirectionLight (..), DirectionLightB (..), DirectionLightS (..)
+    , PointLight (..), PointLightB (..), PointLightS (..)
     , FogEquation(..)
-    , Fog(..)
-    , FogB(..), FogS(..), applyFog -- temporary
-    , ShaderConfig(..)
+    , Fog(..) , FogB(..), FogS(..), applyFog
+    , ShaderConfig (..), ShaderConfigB (..), ShaderConfigS (..)
     , FrameBufferGroup(..)
     , RenderContext(..)
-    , createRenderer
+    , createFrameBufferGroup
+    , ShadowShaderEnvironment(..)
+    , shadowShader
+    , DirectShaderEnvironment(..)
+    , directShader
+    , DeferredShaderEnvironment(..)
+    , deferredShader
+    , SsaoShaderEnvironment(..)
+    , ssaoShader
+    , generateSampleKernelTexture
+    , BlurShaderEnvironment(..)
+    , blurShader
+    , LightingShaderEnvironment(..)
+    , lightingShader
+    , GridShaderEnvironment(..)
+    , gridShader
+    , ScreenShaderEnvironment(..)
+    , screenShader
+    , NormalShaderEnvironment(..)
+    , normalShader
+    , LightingContext
+    , getSunlight
+    , getLight
+    , getFogFactor
+    , getSpecularColor
+    , reflect
+    , getShadow
+    , poissonDisk
+    , v3To4
+    , v4To3
     ) where
 
 import Prelude hiding ((<*))
@@ -283,208 +311,6 @@ createFrameBufferGroup size = do
         <*> newTexture2D Depth16 size 1
     return (size, frameBufferGroup)
 
-createRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
-createRenderer window = do
-
-    shaderConfigUniformBuffer :: Buffer os (Uniform ShaderConfigB) <- newBuffer 1
-    pointLightUniformBuffer :: Buffer os (Uniform PointLightB) <- newBuffer 8
-
-    let screen =
-            [ V2 1 1,  V2 (-1) 1,  V2 1 (-1)
-            , V2 (-1) (-1),  V2 1 (-1),  V2 (-1) 1
-            ]
-    screenBuffer :: Buffer os (B2 Float) <- newBuffer (length screen)
-    writeBuffer screenBuffer 0 screen
-
-    let grid =
-            [ V3 1 1 0,  V3 (-1) 1 0,  V3 1 (-1) 0
-            , V3 (-1) (-1) 0,  V3 1 (-1) 0,  V3 (-1) 1 0
-            ]
-    gridBuffer :: Buffer os (B3 Float) <- newBuffer (length grid)
-    writeBuffer gridBuffer 0 grid
-
-    sampleKernelTex <- generateSampleKernelTexture 64
-
-    noiseTex <- generateNoiseTexture (4, 4)
-
-    compiledShadowShader <- compileShader $ shadowShader window shaderConfigUniformBuffer
-    compiledDirectShader <- compileShader . silenceShader $ directShader window shaderConfigUniformBuffer
-    compiledDeferredShader <- compileShader $ deferredShader window shaderConfigUniformBuffer
-    compiledSsaoShader <- compileShader $ ssaoShader window shaderConfigUniformBuffer
-    compiledBlurShader <- compileShader $ blurShader window
-    compiledLightingShader <- compileShader $ lightingShader window shaderConfigUniformBuffer
-    compiledGridShader <- compileShader $ gridShader window shaderConfigUniformBuffer
-    compiledScreenShader <- compileShader . silenceShader $ screenShader window
-    compiledNormalShader <- compileShader $ normalShader window shaderConfigUniformBuffer
-
-    let renderAction context bounds camera sun lights buffers normalBuffers = do
-            let (_, (w, h)) = bounds
-                size = V2 w h
-            frameBufferGroup <- case renderContextFrameBufferGroup context of
-                Just frameBufferGroup -> if fst frameBufferGroup == size
-                    then return frameBufferGroup
-                    else createFrameBufferGroup size
-                Nothing -> createFrameBufferGroup size
-
-            shadowMat <- renderShadow bounds (snd frameBufferGroup) camera sun buffers
-            renderObjects shadowMat bounds (snd frameBufferGroup) camera sun lights buffers normalBuffers
-
-            return $ RenderContext (Just frameBufferGroup) renderAction
-
-        fog = Fog (V4 0.5 0.5 0.5 1) 10 100 0.2
-
-        renderShadow bounds frameBufferGroup camera sun buffers = do
-            let
-                r = far / 25 -- 50
-                projectionMat = ortho (-r) r (-r) r (-r) r
-                localPosition = V3 0 0 0
-                cameraMat = lookAt'
-                    localPosition
-                    (directionLightDirection sun)
-                    (getUp camera)
-                biasMat = V4
-                    (V4 0.5 0.0 0.0 0.5)
-                    (V4 0.0 0.5 0.0 0.5)
-                    (V4 0.0 0.0 0.5 0.5)
-                    (V4 0.0 0.0 0.0 1.0)
-                -- shadowMat = biasMat !*! projectionMat !*! cameraMat
-                shadowMat = projectionMat !*! cameraMat
-
-            writeBuffer shaderConfigUniformBuffer 0 [ShaderConfig
-                (cameraPosition camera)
-                projectionMat
-                cameraMat
-                identity -- Transformation
-                1 -- ShadowUsed
-                shadowMat
-                fog
-                sun
-                0 -- TimePassed
-                ]
-
-            writeBuffer pointLightUniformBuffer 0 []
-
-            render $ do
-                let shadowTex = frameBufferGroupShadowTex frameBufferGroup
-                    shadowTexSize = texture2DSizes shadowTex !! 0
-                sImage <- getTexture2DImage shadowTex 0
-                clearImageDepth sImage 1
-                primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
-                compiledShadowShader $ ShadowShaderEnvironment primArray sImage
-
-            return shadowMat
-
-        renderObjects shadowMat bounds frameBufferGroup camera sun lights buffers normalBuffers = do
-            let
-                depthTex = frameBufferGroupDepthTex frameBufferGroup
-                positionTex = frameBufferGroupPositionTex frameBufferGroup
-                normalTex = frameBufferGroupNormalTex frameBufferGroup
-                materialTex = frameBufferGroupMaterialTex frameBufferGroup
-                occlusionTex = frameBufferGroupOcclusionTex frameBufferGroup
-                shadowTex = frameBufferGroupShadowTex frameBufferGroup
-                blurredOcclusionTex = frameBufferGroupBlurredOcclusionTex frameBufferGroup
-
-                ((x, y), (w, h)) = bounds
-                -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) near far
-                -- Eye, Center, Up
-                cameraMat = lookAt
-                    (cameraPosition camera)
-                    (cameraPosition camera + getSight camera)
-                    (getUp camera)
-
-            writeBuffer shaderConfigUniformBuffer 0 [ShaderConfig
-                (cameraPosition camera)
-                projectionMat
-                cameraMat
-                identity -- Transformation
-                0 -- ShadowUsed
-                shadowMat
-                fog
-                sun
-                0 -- TimePassed
-                ]
-
-            writeBuffer pointLightUniformBuffer 0 lights
-
-            let viewPort = ViewPort (V2 x y) (V2 w h)
-
-            {- I don’t know if having multiple calls to 'render' is a workaround
-            to some bugs (see https://github.com/tobbebex/GPipe-Core/issues/50)
-            or something with a well defined behavior (some error messages give
-            this advice, especially when trying to use the same texture as an
-            input and output).
-            -}
-
-            -- Direct rendering
-            render $ do
-                clearWindowDepth window 1
-                primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
-                compiledDirectShader $ DirectShaderEnvironment viewPort primArray shadowTex
-
-            -- Deferred rendering
-            render $ do
-                clearWindowDepth window 1
-                dImage <- getTexture2DImage depthTex 0
-                pImage <- getTexture2DImage positionTex 0
-                nImage <- getTexture2DImage normalTex 0
-                mImage <- getTexture2DImage materialTex 0
-                clearImageDepth dImage 1
-                clearImageColor pImage 0
-                clearImageColor nImage 0
-                clearImageColor mImage 0
-                primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
-                compiledDeferredShader $ DeferredShaderEnvironment viewPort primArray dImage pImage nImage mImage
-
-            -- SSAO
-            render $ do
-                oImage <- getTexture2DImage occlusionTex 0
-                clearImageDepth oImage 1
-                screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
-                compiledSsaoShader $ SsaoShaderEnvironment viewPort screenPrimArray oImage positionTex normalTex sampleKernelTex noiseTex
-
-            -- SSAO Bluring
-            render $ do
-                bImage <- getTexture2DImage blurredOcclusionTex 0
-                clearImageDepth bImage 1
-                screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
-                compiledBlurShader $ BlurShaderEnvironment viewPort screenPrimArray bImage occlusionTex
-
-            -- Lighting
-            render $ do
-                screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
-                compiledLightingShader $ LightingShaderEnvironment
-                    viewPort
-                    screenPrimArray
-                    shadowTex
-                    positionTex
-                    normalTex
-                    materialTex
-                    blurredOcclusionTex
-
-            -- Tone mapping
-
-            -- Gaussian blur
-
-            -- Combine
-
-            -- Debug
-            render $ do
-                screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
-                compiledScreenShader $ ScreenShaderEnvironment viewPort screenPrimArray occlusionTex
-
-            -- Debug: normals
-            render $ do
-                normalPrimArray <- mconcat <$> mapM (fmap (toPrimitiveArray LineStrip) . newVertexArray) normalBuffers
-                compiledNormalShader $ NormalShaderEnvironment viewPort normalPrimArray
-
-            -- Post (direct rendering)
-            render $ do
-                gridPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray gridBuffer
-                compiledGridShader $ GridShaderEnvironment viewPort gridPrimArray
-
-    return $ RenderContext Nothing renderAction
-
 data ShadowShaderEnvironment = ShadowShaderEnvironment
     { shadowPrimitives :: PrimitiveArray Triangles (B3 Float, B3 Float)
     , shadowImage :: Image (Format Depth)
@@ -554,7 +380,7 @@ directShader window shaderConfigUniformBuffer = do
     let
         sampleTexture = sample2D sampler SampleAuto Nothing Nothing
         lightWithShadow' (normal, shadowCoord, renderContextSpacePosition, lightingContext) =
-            getSunlight sampleTexture normal shadowCoord renderContextSpacePosition (pure 1) 1 lightingContext
+            getSunlight sampleTexture normal (Just shadowCoord) renderContextSpacePosition (pure 1) 1 lightingContext
         litFrags = lightWithShadow' <$> fragNormals
         litFragsWithDepth = withRasterizedInfo
             (\a p -> (a, rasterizedFragCoord p ^. _z)) litFrags
@@ -804,7 +630,7 @@ lightingShader window shaderConfigUniformBuffer = do
                 lighting = getSunlight
                     shadowSample
                     (normMat !* normal)
-                    (shadowMat !* v3To4 position 1)
+                    (Just $ shadowMat !* v3To4 position 1)
                     position
                     material
                     occlusion
@@ -936,14 +762,14 @@ type LightingContext x =
     , S x Float -- material specular power
     )
 
-getSunlight :: (V2 FFloat -> ColorSample F Depth)
-    -> V3 FFloat
-    -> V4 FFloat
-    -> V3 FFloat
-    -> V4 FFloat
-    -> FFloat
-    -> LightingContext F
-    -> V4 FFloat
+getSunlight :: (V2 (S x Float) -> ColorSample x Depth)
+    -> V3 (S x Float)
+    -> Maybe (V4 (S x Float))
+    -> V3 (S x Float)
+    -> V4 (S x Float)
+    -> (S x Float)
+    -> LightingContext x
+    -> V4 (S x Float)
 getSunlight shadowSample normal shadowCoord renderContextSpacePosition material occlusion lightingContext =
     let (camPos, _, sun, specularIntensity, specularPower) = lightingContext
 
@@ -954,7 +780,7 @@ getSunlight shadowSample normal shadowCoord renderContextSpacePosition material 
         ambient = sunLightColor ^* sunLightAmbientIntensity
         diffuse = sunLightColor ^* maxB 0 (dot normal (-sunLightDirection))
         specular = getSpecularColor cameraDirection normal specularIntensity specularPower (sunLightColor * 1.5) (-sunLightDirection)
-        shadow = getShadow shadowSample normal (-sunLightDirection) shadowCoord
+        shadow = maybe 1 (getShadow shadowSample normal (-sunLightDirection)) shadowCoord
         sunContribution = (baseColor * ambient) + (baseColor * diffuse + specular) ^* shadow
 
         color = v3To4 (sunContribution ^* occlusion) 1
@@ -1001,13 +827,13 @@ getFogFactor fog fogDistance =
 applyFog :: FogS F -> V4 FFloat -> FFloat -> V4 FFloat
 applyFog fog color fogDistance = mix color (fogColorS fog) (V4 a a a 0) where a = getFogFactor fog fogDistance
 
-getSpecularColor :: V3 FFloat
-    -> V3 FFloat
-    -> FFloat
-    -> FFloat
-    -> V3 FFloat
-    -> V3 FFloat
-    -> V3 FFloat
+getSpecularColor :: V3 (S x Float)
+    -> V3 (S x Float)
+    -> (S x Float)
+    -> (S x Float)
+    -> V3 (S x Float)
+    -> V3 (S x Float)
+    -> V3 (S x Float)
 getSpecularColor cameraDirection normal specularIntensity specularPower lightColor rayDirection =
     let bouncingRayDirection = signorm (reflect (-rayDirection) normal)
         specularFactor = dot cameraDirection bouncingRayDirection
@@ -1021,12 +847,12 @@ For a given incident vector I and surface normal N reflect returns the
 reflection direction calculated as I - 2.0 * dot(N, I) * N. N should be
 normalized in order to achieve the desired result.
 -}
-reflect :: V3 FFloat -- ^ Specifies the incident vector.
-    -> V3 FFloat -- ^ Specifies the normal vector.
-    -> V3 FFloat
+reflect :: V3 (S x Float) -- ^ Specifies the incident vector.
+    -> V3 (S x Float) -- ^ Specifies the normal vector.
+    -> V3 (S x Float)
 reflect i n = i - 2 ^* dot n i * n
 
-getShadow :: (V2 FFloat -> ColorSample F Depth) -> V3 FFloat ->  V3 FFloat -> V4 FFloat -> FFloat
+getShadow :: (V2 (S x Float) -> ColorSample x Depth) -> V3 (S x Float) ->  V3 (S x Float) -> V4 (S x Float) -> (S x Float)
 getShadow shadowSample normal sunLightDirection (V4 x y z w) = maxB 0 visibility where
     rectify c = (c/w + 1) / 2
     texCoords = V2 (rectify x) (rectify y)
@@ -1039,7 +865,7 @@ getShadow shadowSample normal sunLightDirection (V4 x y z w) = maxB 0 visibility
 
     visibility = 1 - 0.75 * sum ((getContribution . sample) <$> poissonDisk) / fromIntegral (length poissonDisk)
 
-poissonDisk :: [V2 FFloat]
+poissonDisk :: [V2 (S x Float)]
 poissonDisk =
    [ V2 (-0.94201624) (-0.39906216)
    , V2 (0.94558609) (-0.76890725)
