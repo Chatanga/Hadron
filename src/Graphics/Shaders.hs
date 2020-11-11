@@ -771,7 +771,7 @@ getSunlight :: (V2 (S x Float) -> ColorSample x Depth)
     -> LightingContext x
     -> V4 (S x Float)
 getSunlight shadowSample normal shadowCoord renderContextSpacePosition material occlusion lightingContext =
-    let (camPos, _, sun, specularIntensity, specularPower) = lightingContext
+    let (camPos, fog, sun, specularIntensity, specularPower) = lightingContext
 
         DirectionLightS sunLightColor sunLightDirection sunLightAmbientIntensity = sun
         cameraDirection = signorm (camPos - renderContextSpacePosition)
@@ -784,6 +784,12 @@ getSunlight shadowSample normal shadowCoord renderContextSpacePosition material 
         sunContribution = (baseColor * ambient) + (baseColor * diffuse + specular) ^* shadow
 
         color = v3To4 (sunContribution ^* occlusion) 1
+
+        -- Add fog.
+        {-
+        fogDistance = norm $ camPos - renderContextSpacePosition
+        color' = applyFog fog color (fogDistance * 0.02)
+        -}
 
     in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
 
@@ -815,7 +821,7 @@ getLight shadowSample normal renderContextSpacePosition material occlusion light
 
     in  color
 
-getFogFactor :: FogS F -> FFloat -> FFloat
+getFogFactor :: FogS x -> S x Float -> S x Float
 getFogFactor fog fogDistance =
     let fogEquation = FogExp
         factor = case fogEquation of
@@ -824,7 +830,7 @@ getFogFactor fog fogDistance =
             FogExp2 -> exp (-((fogDensityS fog) * fogDistance)^^2)
     in  1 - clamp factor 0 1
 
-applyFog :: FogS F -> V4 FFloat -> FFloat -> V4 FFloat
+applyFog :: FogS x -> V4 (S x Float) -> S x Float -> V4 (S x Float)
 applyFog fog color fogDistance = mix color (fogColorS fog) (V4 a a a 0) where a = getFogFactor fog fogDistance
 
 getSpecularColor :: V3 (S x Float)
