@@ -620,7 +620,7 @@ lightingShader window shaderConfigUniformBuffer = do
 
         V2 w h = toFloat <$> sampler2DSize positionSampler 0
 
-        litFrags = (flip withRasterizedInfo) frags $ \_ f ->
+        litFrags = flip withRasterizedInfo frags $ \_ f ->
             let (V4 x y _ _) = rasterizedFragCoord f
                 texCoords = V2 (x / w) (y / h)
                 position = positionSample texCoords
@@ -657,7 +657,7 @@ gridShader window shaderConfigUniformBuffer = do
         projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V2 VFloat, VFloat, FogS V))
         projectedTriangles =
             (\p -> (viewProjMat !* p, (p^._xy, camPos^._z, shaderConfigFogS config))) .
-            (\p -> v3To4 p 1).
+            (`v3To4` 1) .
             (* 4000) <$> triangles
 
         getRasterOptions env = (Front, gridViewport env, DepthRange 0 1)
@@ -672,7 +672,7 @@ gridShader window shaderConfigUniformBuffer = do
             V2 gx gy = abs (fract' (coord - 0.5) - 0.5) / (fwidth <$> coord)
             line = minB gx gy
             -- Just visualize the grid lines directly
-            color = V4 1 0 0 (1 - minB (line) 1)
+            color = V4 1 0 0 (1 - minB line 1)
             -- Add fog.
             fogDistance = norm $ V3 (p^._x) (p^._y) camPosZ
             color' = applyFog fog color (fogDistance * 0.01)
@@ -719,7 +719,7 @@ screenShader window = do
             let (V4 x y _ _) = rasterizedFragCoord f
                 texCoords = V2 (x / w) (y / h)
                 d = depthSample texCoords
-            in  (V4 d d d 1)
+            in  V4 d d d 1
 
         colorOption = ContextColorOption NoBlending (pure True)
 
@@ -767,7 +767,7 @@ getSunlight :: (V2 (S x Float) -> ColorSample x Depth)
     -> Maybe (V4 (S x Float))
     -> V3 (S x Float)
     -> V4 (S x Float)
-    -> (S x Float)
+    -> S x Float
     -> LightingContext x
     -> V4 (S x Float)
 getSunlight shadowSample normal shadowCoord renderContextSpacePosition material occlusion lightingContext =
@@ -826,8 +826,8 @@ getFogFactor fog fogDistance =
     let fogEquation = FogExp
         factor = case fogEquation of
             FogLinear -> (fogEndS fog - fogDistance) / (fogEndS fog - fogStartS fog)
-            FogExp -> exp (-(fogDensityS fog) * fogDistance)
-            FogExp2 -> exp (-((fogDensityS fog) * fogDistance)^^2)
+            FogExp -> exp (-fogDensityS fog * fogDistance)
+            FogExp2 -> exp (-(fogDensityS fog * fogDistance)^^2)
     in  1 - clamp factor 0 1
 
 applyFog :: FogS x -> V4 (S x Float) -> S x Float -> V4 (S x Float)
@@ -835,8 +835,8 @@ applyFog fog color fogDistance = mix color (fogColorS fog) (V4 a a a 0) where a 
 
 getSpecularColor :: V3 (S x Float)
     -> V3 (S x Float)
-    -> (S x Float)
-    -> (S x Float)
+    -> S x Float
+    -> S x Float
     -> V3 (S x Float)
     -> V3 (S x Float)
     -> V3 (S x Float)
@@ -858,7 +858,7 @@ reflect :: V3 (S x Float) -- ^ Specifies the incident vector.
     -> V3 (S x Float)
 reflect i n = i - 2 ^* dot n i * n
 
-getShadow :: (V2 (S x Float) -> ColorSample x Depth) -> V3 (S x Float) ->  V3 (S x Float) -> V4 (S x Float) -> (S x Float)
+getShadow :: (V2 (S x Float) -> ColorSample x Depth) -> V3 (S x Float) ->  V3 (S x Float) -> V4 (S x Float) -> S x Float
 getShadow shadowSample normal sunLightDirection (V4 x y z w) = maxB 0 visibility where
     rectify c = (c/w + 1) / 2
     texCoords = V2 (rectify x) (rectify y)
@@ -869,30 +869,30 @@ getShadow shadowSample normal sunLightDirection (V4 x y z w) = maxB 0 visibility
     sample offset = shadowSample (texCoords + offset / 700)
     getContribution zShadow = ifThenElse' (zShadow <* rectify z - bias) 1 0
 
-    visibility = 1 - 0.75 * sum ((getContribution . sample) <$> poissonDisk) / fromIntegral (length poissonDisk)
+    visibility = 1 - 0.75 * sum (getContribution . sample <$> poissonDisk) / fromIntegral (length poissonDisk)
 
 poissonDisk :: [V2 (S x Float)]
 poissonDisk =
    [ V2 (-0.94201624) (-0.39906216)
-   , V2 (0.94558609) (-0.76890725)
+   , V2 0.94558609 (-0.76890725)
    , V2 (-0.094184101) (-0.92938870)
-   , V2 (0.34495938) (0.29387760)
-   , V2 (-0.91588581) (0.45771432)
+   , V2 0.34495938 0.29387760
+   , V2 (-0.91588581) 0.45771432
    , V2 (-0.81544232) (-0.87912464)
-   , V2 (-0.38277543) (0.27676845)
-   , V2 (0.97484398) (0.75648379)
-   , V2 (0.44323325) (-0.97511554)
-   , V2 (0.53742981) (-0.47373420)
+   , V2 (-0.38277543) 0.27676845
+   , V2 0.97484398 0.75648379
+   , V2 0.44323325 (-0.97511554)
+   , V2 0.53742981 (-0.47373420)
    , V2 (-0.26496911) (-0.41893023)
-   , V2 (0.79197514) (0.19090188)
-   , V2 (-0.24188840) (0.99706507)
-   , V2 (-0.81409955) (0.91437590)
-   , V2 (0.19984126) (0.78641367)
-   , V2 (0.14383161) (-0.14100790)
+   , V2 0.79197514 0.1909018
+   , V2 (-0.24188840) 0.99706507
+   , V2 (-0.81409955) 0.91437590
+   , V2 0.19984126 0.78641367
+   , V2 0.14383161 (-0.14100790)
    ]
 
 v3To4 :: Floating a => V3 a -> a -> V4 a
-v3To4 (V3 x y z) w = V4 x y z w
+v3To4 (V3 x y z) = V4 x y z
 
 v4To3 :: Floating a => V4 a -> V3 a
 v4To3 (V4 x y z w) = V3 x y z

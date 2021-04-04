@@ -3,6 +3,7 @@
 module Graphics.World
     ( FireBall(..)
     , World(..)
+    , sphere
     --
     , createWorld
     , animateWorld
@@ -44,7 +45,7 @@ createWorld window = do
     wallBuffer <- newBuffer (length walls)
     writeBuffer wallBuffer 0 walls
 
-    let sphere' = map (\(V3 x y z, n) -> (V3 (x) (y) (z + 6), n)) (sphere 4)
+    let sphere' = map (\(V3 x y z, n) -> (V3 x y (z + 6), n)) (sphere 4)
     sphereBuffer <- newBuffer (length sphere')
     writeBuffer sphereBuffer 0 sphere'
 
@@ -130,7 +131,7 @@ sphere depth = zip vertices vertices where
 walls :: Floating a => [(V3 a, V3 a)]
 walls = zip vertices (extractNormals vertices) where
     (p0, p1, p2, p3, p4, p5, p6) = (V3 0 0 0, V3 1 0 0, V3 0 1 0, V3 0 0 1, V3 1 1 0, V3 0 1 1, V3 1 0 1)
-    vertices = map (\x -> x - V3 10 10 10) $ map (^* 20) $
+    vertices = map (\x -> x - V3 10 10 10) . (^* 20) $
         [ p0, p1, p2
         , p1, p4, p2
         , p0, p2, p3

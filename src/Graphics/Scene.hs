@@ -12,7 +12,7 @@ import Control.Monad.State
 import Data.Fixed
 import Data.IORef
 import Data.Maybe
-import qualified Data.Set as Set
+import qualified Data.Map as Map
 
 import Linear
 import Graphics.GPipe
@@ -28,12 +28,13 @@ import Graphics.Shaders
 import Graphics.World
 import Graphics.Texture
 import Graphics.Polygonisation
+import Graphics.CubeRoom
 
 ------------------------------------------------------------------------------------------------------------------------
 
 data SceneContext os = SceneContext
     { sceneContextCameraName :: String
-    , sceneContextCameraMoves :: !(Set.Set Move)
+    , sceneContextCameraMoves :: !(Map.Map Move Double)
     , sceneContextCursorPosition :: (Float, Float)
     , sceneContextDrag :: Maybe (Float, Float)
     , sceneContextRenderContext :: RenderContext os
@@ -60,13 +61,18 @@ createScene window worldRef contextRef = Scene
     (animate window worldRef contextRef)
     (manipulate window worldRef contextRef)
 
+data SceneName = Incal | Polygonisation | CubeRoom
+
 createSceneContext :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (SceneContext os)
 createSceneContext window = do
-    -- renderer <- createIncalRenderer window
-    renderer <- createPolygonisationRenderer window
+    let sceneName = Polygonisation
+    renderer <- case sceneName of
+        Incal -> createIncalRenderer window
+        Polygonisation -> createPolygonisationRenderer window
+        CubeRoom -> createCubeRoomRenderer window
     return $ SceneContext
         "first-camera"
-        Set.empty
+        Map.empty
         (0, 0)
         Nothing
         renderer
@@ -89,7 +95,7 @@ display window worldRef contextRef bounds = do
         normalBuffers = worldNormalBuffers world
         renderContext = sceneContextRenderContext context
 
-    newRenderContext <- (renderContextRenderAction renderContext) renderContext bounds camera sun lights buffers normalBuffers
+    newRenderContext <- renderContextRenderAction renderContext renderContext bounds camera sun lights buffers normalBuffers
 
     liftIO $ writeIORef contextRef (context{ sceneContextRenderContext = newRenderContext })
 
@@ -120,9 +126,9 @@ animate window worldRef contextRef (_, height) timeDelta = do
                     , (GoForth, getSight camera)
                     , (GoBack, - (getSight camera))
                     ]
-                applyMove p (m, dp) = if Set.member m moves
-                    then p + dp * realToFrac timeDelta * 50
-                    else p
+                applyMove p (m, dp) = case Map.lookup m moves of
+                    Just i -> p + dp * realToFrac (timeDelta * i)
+                    Nothing -> p
                 position = foldl applyMove (cameraPosition camera) keyMoves
                 (alt, az) = (cameraAltitude camera, cameraAzimuth camera)
                 (alt', az') = case sceneContextDrag context of
@@ -181,7 +187,7 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
         context <- liftIO $ readIORef contextRef
         let
             moves = sceneContextCameraMoves context
-            handleKey = if ks == GLFW.KeyState'Released then Set.delete else Set.insert
+            handleKey = if ks == GLFW.KeyState'Released then Map.delete else flip (Map.insertWith (\i n -> min 10 (n * 10))) 1
             moves' = case k of
                 GLFW.Key'Space -> handleKey GoUp moves
                 GLFW.Key'LeftControl -> handleKey GoDown moves

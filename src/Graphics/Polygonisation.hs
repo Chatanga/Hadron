@@ -12,14 +12,13 @@ import Control.Monad
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception (MonadException)
 import Data.Int (Int8, Int32)
-import Data.Word (Word8, Word32)
-import Data.List (intersect, partition)
-import Data.Maybe (fromJust)
+import Data.Word (Word8, Word16, Word32)
 
 import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Debug
+import Graphics.MarchingCube
 import Graphics.Shaders
 import Graphics.Geometry
 import Graphics.Texture
@@ -39,6 +38,12 @@ What I’m missing:
 
 
 ----------------------------------------------------------------------------------------------------------------------
+
+vintCube :: [V3 VInt]
+vintCube = map (fmap fromIntegral) cube
+
+int8Cube :: [V3 Int8]
+int8Cube = map (fmap fromIntegral) cube
 
 createFillDensityRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Buffer os (Uniform (B3 Float)) ->
@@ -85,11 +90,11 @@ createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
         let toV3 x y z = x*x + y*y + z*z - 100
             fs'old = (\(V3 x y z) -> toV3 (x + dx - 10) (y + dy + 3) (z + dz - 10)) <$> fs
 
-        let sample i p a b = sample3D (noiseSamplers !! i) SampleAuto Nothing Nothing (p * a / 128) * b
+        let sample i p a b = sample3D (noiseSamplers !! i) SampleAuto Nothing Nothing (p * a / 256) * b
             f p =
                 let p' = p + offset
-                    -- density = p'^._z / 16
-                    density = (norm p' - 40) / 16
+                    density = p'^._z / 32
+                    -- density = (norm p' - 40) / 8
                 in  density
                     + sample 0 p' 4.03 0.25
                     + sample 1 p' 1.96 0.50
@@ -126,7 +131,7 @@ createGenerateBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, 
     ContextT ctx os m (Buffer os (B3 Float, B3 Float) -> Render os ())
 createGenerateBlockRenderer window offsetBuffer densityTexture = do
     let (V3 size _ _) = head (texture3DSizes densityTexture)
-        cellCount = ((size - 1) ^ (3 :: Int))
+        cellCount = (size - 1) ^ (3 :: Int)
 
     cellPositionBuffer :: Buffer os (B3 Int8) <- newBuffer cellCount
     writeBuffer cellPositionBuffer 0 [ fromIntegral <$> V3 x y z | x <- [0 .. size-2], y <- [0 .. size-2], z <- [0 .. size-2] ]
@@ -134,10 +139,10 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
     let protoTriangleLists = map generateCaseProtoTriangleList (generateBoolCase 8)
         toCaseContent :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [V3 Int8] -- We only need a [0, 1] domain actually…
         toCaseContent protoTriangleList = concatMap (\(e1, e2, e3) -> concatMap ((\(i1, i2) -> map (int8Cube !!) [i1, i2]). (cubeEdges !!)) [e1, e2, e3]) protoTriangleList
-        toPaddedCaseContent protoTriangleList = take (4 * 3 * 2) (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
+        toPaddedCaseContent protoTriangleList = take (maxCellTriangleCount * 3 * 2) (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
 
     arityTexture :: Texture1D os (Format RInt) <- newTexture1D R8I 256 1
-    writeTexture1D arityTexture 0 0 256 ((map (fromIntegral . length) protoTriangleLists) :: [Int32])
+    writeTexture1D arityTexture 0 0 256 (map (fromIntegral . length) protoTriangleLists :: [Int32])
 
     casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 24 256) 1
     writeTexture2D casesTexture 0 0 (V2 24 256) (concatMap toPaddedCaseContent protoTriangleLists)
@@ -169,7 +174,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                     getArity = texelFetch1D aritySampler (pure 0) 0
 
                     getCase :: V2 VInt -> V3 VInt
-                    getCase = (texelFetch2D caseSampler (pure 0) 0)
+                    getCase = texelFetch2D caseSampler (pure 0) 0
 
                     -- 2^(7-i) benefits of being statically evaluated.
                     cellCase :: VInt
@@ -180,7 +185,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                     triangles :: GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)
                     (_, triangles) = while
                         (\(i, _) -> i <* count)
-                        (\(i, gg) -> (i+1, (emitTriangle (i-1)) gg)) -- TODO Generated code seems to have a bug: i is modified with side effect.
+                        (\(i, gg) -> (i+1, emitTriangle (i-1) gg)) -- TODO Generated code seems to have a bug: i is modified with side effect.
                         (0, generativeTriangleStrip)
 
                     getNormal :: V3 VFloat -> V3 VFloat
@@ -209,7 +214,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
 
             gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = gs <&> makeTriangles
 
-        let maxVertices = 4 * 3
+        let maxVertices = maxCellTriangleCount * 3
         drawNothing window fst maxVertices gs'
 
     return $ \blockBuffer -> do
@@ -223,9 +228,9 @@ createGenerateBlockRenderer2 :: forall ctx os m. (ContextHandler ctx, MonadIO m,
     ContextT ctx os m (Buffer os (B3 Float, B3 Float) -> Render os ())
 createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
     let (V3 size _ _) = head (texture3DSizes densityTexture)
-        cellCount = ((size - 1) ^ (3 :: Int))
+        cellCount = (size - 1) ^ (3 :: Int)
 
-    let protoBlockBufferSize = cellCount * 4
+    let protoBlockBufferSize = cellCount * maxCellTriangleCount
     protoBlockBuffer :: Buffer os (B Word32) <- newBuffer protoBlockBufferSize
 
     cellPositionBuffer :: Buffer os (B3 Int8) <- newBuffer cellCount
@@ -234,13 +239,13 @@ createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
     let protoTriangleLists = map generateCaseProtoTriangleList (generateBoolCase 8)
         toCaseContent :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [V3 Int8]
         toCaseContent protoTriangleList = map (\(e1, e2, e3) -> fromIntegral <$> V3 e1 e2 e3) protoTriangleList
-        toPaddedCaseContent protoTriangleList = take 4 (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
+        toPaddedCaseContent protoTriangleList = take maxCellTriangleCount (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
 
     arityTexture :: Texture1D os (Format RInt) <- newTexture1D R8I 256 1
-    writeTexture1D arityTexture 0 0 256 ((map (fromIntegral . length) protoTriangleLists) :: [Int32])
+    writeTexture1D arityTexture 0 0 256 (map (fromIntegral . length) protoTriangleLists :: [Int32])
 
-    casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 4 256) 1
-    writeTexture2D casesTexture 0 0 (V2 4 256) (concatMap toPaddedCaseContent protoTriangleLists)
+    casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 maxCellTriangleCount 256) 1
+    writeTexture2D casesTexture 0 0 (V2 maxCellTriangleCount 256) (concatMap toPaddedCaseContent protoTriangleLists)
 
     listVerticesShader :: CompiledShader os (PrimitiveArray Points (B3 Int8))  <- compileShader $ do
 
@@ -265,7 +270,7 @@ createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
                     getArity = texelFetch1D aritySampler (pure 0) 0
 
                     getCase :: V2 VInt -> V3 VInt
-                    getCase = (texelFetch2D caseSampler (pure 0) 0)
+                    getCase = texelFetch2D caseSampler (pure 0) 0
 
                     -- 2^(7-i) benefits of being statically evaluated.
                     cellCase :: VInt
@@ -276,7 +281,7 @@ createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
                     protoTriangles :: GGenerativeGeometry Points VWord
                     (_, protoTriangles) = while
                         (\(i, _) -> i <* count)
-                        (\(i, gg) -> (i+1, (emitProtoTriangle (i-1)) gg)) -- TODO Generated code seems to have a bug: i is modified with side effect.
+                        (\(i, gg) -> (i+1, emitProtoTriangle (i-1) gg)) -- TODO Generated code seems to have a bug: i is modified with side effect.
                         (0, generativePoints)
 
                     emitProtoTriangle :: VInt -> GGenerativeGeometry Points VWord -> GGenerativeGeometry Points VWord
@@ -285,12 +290,12 @@ createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
                             V3 e1 e2 e3 = toWord <$> getCase (V2 i cellCase)
                             -- GPU Gems code use a "z6_y6_x6_edge1_edge2_edge3" format which is weird.
                             -- 6 bit aren’t needed for [0, 32] position and 4 bits is not enough for a directed edges indice.
-                            z5_y5_x5_edge5_edge5_edge5 = foldl1 (or') (zipWith (shiftL') [z, y, x, e1, e2, e3] [25, 20, 15, 10, 5, 0])
+                            z5_y5_x5_edge5_edge5_edge5 = foldl1 or' (zipWith shiftL' [z, y, x, e1, e2, e3] [25, 20, 15, 10, 5, 0])
                         in  endPrimitive . emitVertex z5_y5_x5_edge5_edge5_edge5 -- TODO Group endPrimitive calls?
 
             gs' :: GeometryStream (GGenerativeGeometry Points VWord) = makeProtoTriangles <$> gs
 
-        let maxVertices = 4
+        let maxVertices = maxCellTriangleCount
         drawNothing window (const protoBlockBuffer) maxVertices gs'
 
     cubeEdgeTexture :: Texture2D os (Format RInt) <- newTexture2D R8I (V2 2 (length cubeEdges)) 1
@@ -330,7 +335,7 @@ createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
                     getCubeVertice i = texelFetch1D cubeVerticeSampler (pure 0) 0 i
 
                     triangles :: V3 (V3 VFloat, V3 VFloat)
-                    triangles = V3 (createTriangle e1) (createTriangle e2) (createTriangle e3)
+                    triangles = V3 (createTriangle e1) (createTriangle e3) (createTriangle e2)
 
                     getNormal :: V3 VFloat -> V3 VFloat
                     getNormal v = normal where
@@ -421,12 +426,19 @@ createBlockOutlineRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, M
     ContextT ctx os m (V2 Int -> Int -> Render os ())
 createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
 
-    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length floatCube)
-    writeBuffer blockOutlineBuffer 0 floatCube
+    let floatCube :: [V3 Float]
+        floatCube = map (fmap fromIntegral) cube
+
+    -- blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length floatCube)
+    -- writeBuffer blockOutlineBuffer 0 floatCube
+    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length floatCube * 32^3)
+    writeBuffer blockOutlineBuffer 0 $ concatMap (\offset -> map (+ offset) floatCube) [V3 x y z | x <- [0..31], y <- [0..31], z <- [0..31]]
 
     let edges = concatMap (\(i, j) -> [i, j]) $ filter (\(i, j) -> j > i) cubeEdges
-    blockOutlineIndexBuffer :: Buffer os (BPacked Word8) <- newBuffer (length edges)
-    writeBuffer blockOutlineIndexBuffer 0 (map fromIntegral edges)
+    -- blockOutlineIndexBuffer :: Buffer os (BPacked Word8) <- newBuffer (length edges)
+    -- writeBuffer blockOutlineIndexBuffer 0 (map fromIntegral edges)
+    blockOutlineIndexBuffer :: Buffer os (B Word32) <- newBuffer (length edges * 32^3)
+    writeBuffer blockOutlineIndexBuffer 0 $ concatMap (\di -> map (+ (di * fromIntegral (length floatCube))) (map fromIntegral edges)) [0 .. (32^3)-1]
 
     shader :: CompiledShader os (V2 Int, (Int, PrimitiveArray Lines (B3 Float)))  <- compileShader $ do
         (projectionMat, cameraMat, _) <- getUniform (const (projectionBuffer, 0))
@@ -439,7 +451,8 @@ createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
             projectedLines :: PrimitiveStream Lines (V4 VFloat, ())
             projectedLines =
                 (\p -> (modelViewProj !* p, ())) .
-                (\p -> point (p * 32 + offset)) <$>
+--                (\p -> point (p * 32 + offset)) <$>
+                (\p -> point (p + offset)) <$>
                 lines
 
         let rasterOptions = \(size, _) -> (Front, ViewPort 0 size, DepthRange 0 1)
@@ -479,7 +492,7 @@ createGridRenderer window projectionBuffer fogBuffer = do
             projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V2 VFloat, VFloat))
             projectedTriangles =
                 (\p -> (modelViewProj !* p, (p^._xy, camPos^._z))) .
-                (\p -> v3To4 p 1).
+                (`v3To4` 1).
                 (* 4000) <$> triangles
 
             getRasterOptions (size, _) = (FrontAndBack, ViewPort 0 size, DepthRange 0 1)
@@ -503,7 +516,7 @@ createGridRenderer window projectionBuffer fogBuffer = do
                                 (pure 0.3)))
                 -- Just visualize the grid lines directly.
                 line = minB gx gy
-                color = V4 r g b (1 - minB (line) 1)
+                color = V4 r g b (1 - minB line 1)
                 -- Add fog.
                 fogDistance = norm $ V3 (p^._x) (p^._y) camPosZ
                 color' = applyFog fog color (fogDistance * 0.01)
@@ -528,7 +541,7 @@ createGridRenderer window projectionBuffer fogBuffer = do
 createPolygonisationRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
 createPolygonisationRenderer window = do
     let blockSize = 32
-        blockBufferSize = blockSize^3 * 4 * 3 * 2 `div` 20
+        blockBufferSize = blockSize^3 * maxCellTriangleCount * 3 * 2 `div` 20
         -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [0], y <- [0], z <- [0] ]
         -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 2] ]
         offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-5 .. 4], y <- [-5 .. 4], z <- [-3 .. 2] ]
@@ -549,19 +562,16 @@ createPolygonisationRenderer window = do
     let generateCellFromOffset offset blockBuffer = do
             writeBuffer offsetBuffer 0 [offset]
             render fillDensityTexture
-            -- OffsetBuffer must be rewritten to make things work… Why? Should
-            -- everything be provide as a parameter instead as a lexical closure
-            -- (at least regarding uniform)?
-            writeBuffer offsetBuffer 0 [offset]
             render (generateCell blockBuffer)
-
-    -- writeBuffer offsetBuffer 0 offsets
 
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
 
     forM_ (zip offsets blockBuffers) $ \(offset, blockBuffer) -> do
         -- liftIO $ hPutStrLn stderr "Creating block"
         generateCellFromOffset offset blockBuffer
+
+    -- How I end up using this buffer in such a silly way?
+    writeBuffer offsetBuffer 0 offsets
 
     writeBuffer fogBuffer 0 [Fog (v3To4 skyBlue 1) 10 100 0.2]
 
@@ -574,6 +584,7 @@ createPolygonisationRenderer window = do
             -> [Buffer os (B3 Float)]
             -> ContextT GLFW.Handle os IO (RenderContext os)
         renderIt _ bounds camera sun lights buffers normalBuffers = do
+
             writeBuffer sunBuffer 0 [sun]
 
             let (_ , (w, h)) = bounds
@@ -581,7 +592,7 @@ createPolygonisationRenderer window = do
                 projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) near far
                 -- Eye, Center, Up
                 cameraMat = lookAt
-                    (cameraPos)
+                    cameraPos
                     (cameraPos + getSight camera)
                     (getUp camera)
                 cameraPos = cameraPosition camera
@@ -593,156 +604,8 @@ createPolygonisationRenderer window = do
                 clearWindowDepth window 1
                 forM_ blockBuffers $ \blockBuffer -> blockRenderer (V2 w h, blockBuffer)
                 -- forM_ [0 .. length offsets - 1] $ \i -> blockOutlineRenderer (V2 w h) i
-                gridRenderer (V2 w h)
+                -- gridRenderer (V2 w h) -- too costly
 
             return $ RenderContext Nothing renderIt
 
     return (RenderContext Nothing renderIt)
-
-findConvexSubGraphs :: (a -> [a] -> Bool) -> [a] -> [[a]]
-findConvexSubGraphs _ [] = []
-findConvexSubGraphs isConnected (x:xs) = let
-    classes = partition (isConnected x) (findConvexSubGraphs isConnected xs)
-    in case classes of
-        ([], ocs) -> [x]:ocs
-        (cs, ocs) -> (x:(concat cs)):ocs
-
-type VerticeIndice = Int
-type EdgeIndice = Int
-type FaceIndice = Int
-
-floatCube :: [V3 Float]
-floatCube =
-    [ V3 0 0 0
-    , V3 1 0 0
-    , V3 0 1 0
-    , V3 1 1 0
-    , V3 0 0 1
-    , V3 1 0 1
-    , V3 0 1 1
-    , V3 1 1 1
-    ]
-
-vintCube :: [V3 VInt]
-vintCube =
-    [ V3 0 0 0
-    , V3 1 0 0
-    , V3 0 1 0
-    , V3 1 1 0
-    , V3 0 0 1
-    , V3 1 0 1
-    , V3 0 1 1
-    , V3 1 1 1
-    ]
-
-int8Cube :: [V3 Int8]
-int8Cube =
-    [ V3 0 0 0
-    , V3 1 0 0
-    , V3 0 1 0
-    , V3 1 1 0
-    , V3 0 0 1
-    , V3 1 0 1
-    , V3 0 1 1
-    , V3 1 1 1
-    ]
-
--- directed edges actually
-cubeEdges :: [(VerticeIndice, VerticeIndice)] =
-    [ (0, 1), (0, 2), (0, 4) -- <- 0
-    , (1, 0), (1, 3), (1, 5) -- <- 3
-    , (2, 0), (2, 3), (2, 6) -- <- 6
-    , (3, 1), (3, 2), (3, 7) -- <- 9
-    , (4, 0), (4, 5), (4, 6) -- <- 12
-    , (5, 1), (5, 4), (5, 7) -- <- 15
-    , (6, 2), (6, 4), (6, 7) -- <- 18
-    , (7, 3), (7, 5), (7, 6) -- <- 21
-    ]
-
--- case -> list of proto triangles of edge indices
-generateCaseProtoTriangleList :: [Bool] -> [(EdgeIndice, EdgeIndice, EdgeIndice)]
-generateCaseProtoTriangleList aboveness | length (_traceList "aboveness" aboveness) == 8 = triangles where
-    {-
-         4+----+5
-         /|   /|
-       6+-|--+7|
-        |0+--|-|1
-        |/   |/
-       2+----+3
-    -}
-    vertices :: [VerticeIndice] = [0 .. 7]
-
-    edges = cubeEdges
-
-    {-
-             5 4
-             |/
-         3---+---1
-            /|
-           2 0
-    -}
-    faces :: [FaceIndice] = [0 .. 5]
-
-    folds :: [({- left -} FaceIndice, {- right -} FaceIndice)] -- !! EdgeIndice -- when looking inside the cube oriented along the edge
-    folds =
-        [ (0, 4), (3, 0), (4, 3) -- <- 0
-        , (4, 0), (0, 1), (1, 4) -- <- 3
-        , (0, 3), (2, 0), (3, 2) -- <- 6
-        , (1, 0), (0, 2), (2, 1) -- <- 9
-        , (3, 4), (4, 5), (5, 3) -- <- 12
-        , (4, 1), (5, 4), (1, 5) -- <- 15
-        , (2, 3), (3, 5), (5, 2) -- <- 18
-        , (1, 2), (5, 1), (2, 5) -- <- 21
-        ]
-    getLeft = fst . (folds !!)
-    getRight = snd . (folds !!)
-
-    (innerEdges, transitionEdges) = partition (\(i1, i2) -> aboveness !! i1 == aboveness !! i2) edges
-
-    -- findConvexSubGraphs the vertices in connected graphs where all vertices are above (the isles) or below (the seas).
-    isInnerConnected i =
-        let neighbours = map snd (filter ((==) i . fst) (_traceList "innerEdges" innerEdges))
-        in  not . null . intersect neighbours
-    (isles, seas) = partition ((aboveness !!) . head) (findConvexSubGraphs isInnerConnected vertices)
-
-    findShoreEdges area = filter ((`elem` area) . fst) (_traceList "transitionEdges" transitionEdges)
-    isleShoreEdges = map findShoreEdges (_traceList "isles" isles)
-    seaShoreEdges = map findShoreEdges (_traceList "seas" seas)
-
-    {-
-    When an isle has shores leading to many seas, normalizing them could be complicated.
-    Even if it is not the case, the result could be different when isles and seas are
-    reversed. seems easier to select the more fragmented part, isles or sea, and change
-    the edge directions for the latter.
-    -}
-    shoreEdges = if (length isles > length seas)
-        then isleShoreEdges
-        else map (map (\(i, j) -> (j, i))) seaShoreEdges
-
-    shores :: [[EdgeIndice]]
-    shores =
-        let edgeIndex = zipWith (flip (,)) [0 ..] edges
-        in  map (map (\edge -> fromJust (lookup edge edgeIndex))) shoreEdges
-
-    normalizeShore :: Maybe FaceIndice -> [EdgeIndice] -> [EdgeIndice]
-    normalizeShore _ [] = []
-    normalizeShore Nothing (e:es) = e : normalizeShore (Just (getRight e)) es
-    normalizeShore (Just expectedLeftFaceIndice) es =
-        let ([edgeToTheRight], otherEdges) = partition ((expectedLeftFaceIndice ==) . getLeft) es
-        in  edgeToTheRight : normalizeShore (Just (getRight edgeToTheRight)) otherEdges
-    normalizedShores = map (normalizeShore Nothing) (_traceList "shores" shores)
-
-    triangles =
-        let ts = _traceList "triangles" $ concatMap toTriangleList (_traceList "normalizedShores" normalizedShores)
-        in  if length ts <= 12 then ts else error "too many vertices generated"
-
-    toTriangleList ps
-        | length ps <= 7 = toTriangleList' ps
-        | otherwise = error $ "Too many edges: " ++ show (length ps)
-
-    -- TODO Generate triangle strips instead.
-    toTriangleList' :: [a] -> [(a, a, a)]
-    toTriangleList' [] = []
-    toTriangleList' (p:ps) = zipWith (\pN pM -> (p, pN, pM)) ps (tail ps)
-
-generateCaseProtoTriangleList _ | otherwise = error "aboveness must contains data for 8 vertices"

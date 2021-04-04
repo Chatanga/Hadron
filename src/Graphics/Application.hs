@@ -64,7 +64,7 @@ type ScenicUI os = UI (ContextT GLFW.Handle os IO) (Maybe (Scene os))
 createScenicUI :: Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext os)
-    -> (ScenicUI os)
+    -> ScenicUI os
 createScenicUI window currentWorld currentContext = createUI ui where
     masterScene = createScene window currentWorld currentContext
     radarScene = createScene window currentWorld currentContext
@@ -83,7 +83,7 @@ createScenicUI window currentWorld currentContext = createUI ui where
 thing as animating the world displayed by the scene. Worlds are animated
 separately.
 -}
-animateUI :: Double -> (ScenicUI os) -> ContextT GLFW.Handle os IO (ScenicUI os)
+animateUI :: Double -> ScenicUI os -> ContextT GLFW.Handle os IO (ScenicUI os)
 animateUI frameDuration ui = do
     root' <- forM (uiRoot ui) $ \view -> do
         let (_, (w, h)) = viewLocalBounds view
@@ -127,7 +127,7 @@ runApplication name = runContextT GLFW.defaultHandleConfig $ do
     eventQueueRef <- liftIO $ newIORef []
     let
         -- Queue an event for later processing in the proper context.
-        pushEvent event = modifyIORef eventQueueRef ((:) event)
+        pushEvent event = modifyIORef eventQueueRef (event :)
         -- Process an event in the proper context.
         doProcessEvent event = do
             ui <- liftIO $ readIORef uiRef
@@ -178,8 +178,8 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
 
     -- Animate both the world and the scenes (in the UI).
     let frameDuration = fromMaybe 0 ((-) <$> mt2 <*> mt1)
-    (liftIO $ readIORef worldRef) >>= animateWorld frameDuration >>= (liftIO . writeIORef worldRef)
-    (liftIO $ readIORef uiRef) >>= animateUI frameDuration >>= (liftIO . writeIORef uiRef)
+    liftIO (readIORef worldRef) >>= animateWorld frameDuration >>= (liftIO . writeIORef worldRef)
+    liftIO (readIORef uiRef) >>= animateUI frameDuration >>= (liftIO . writeIORef uiRef)
 
     -- Render the frame.
     render $ clearWindowColor window 0.5
@@ -190,7 +190,7 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
 
     -- Do the whole thing again?
     shouldClose <- fromMaybe False <$> GLFW.windowShouldClose window
-    shouldQuit <- (||) <$> (liftIO $ readIORef quitRef) <*> pure shouldClose
+    shouldQuit <- (||) <$> liftIO (readIORef quitRef) <*> pure shouldClose
     if shouldQuit
         then liftIO $ infoM "Hadron" "Exiting"
         else mainLoop window timing worldRef uiRef quitRef eventQueueRef doProcessEvent

@@ -47,7 +47,7 @@ loadImage path = do
             writeTexture2D texture 0 0 size (pixelFold getJuicyPixel [] image)
             return (Just texture)
 
-    (liftIO $ readImage path) >>= \case
+    liftIO (readImage path) >>= \case
         Left e -> do
             liftIO $ errorM "Kage" ("could not load image " ++ path ++ ": " ++ e)
             return Nothing

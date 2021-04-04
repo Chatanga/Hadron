@@ -1,4 +1,4 @@
-{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances #-}
+{-# LANGUAGE FlexibleInstances, UndecidableInstances #-}
 {-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
 

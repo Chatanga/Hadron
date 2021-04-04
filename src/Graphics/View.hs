@@ -19,6 +19,7 @@ module Graphics.View
 
 import Control.Monad
 
+import Data.List
 import Data.Maybe
 import Data.Tree
 import Data.Tree.Zipper
@@ -289,7 +290,7 @@ updateUntilStable :: Monad m
     -> m (Maybe (TreeLoc (View m a)))
 updateUntilStable update loc = do
     let hasEvent = not . null . viewEventQueue . getLabel
-    case listToMaybe (filter hasEvent (walkDeepFirst False loc)) of
+    case find hasEvent (walkDeepFirst False loc) of
         Nothing -> return (Just loc)
         Just loc' -> do
             let view = getLabel loc'
@@ -314,11 +315,7 @@ selectOn :: (View m a -> Bool) -> TreeLoc (View m a) -> Maybe (TreeLoc (View m a
 selectOn p loc = result where
     result = if p (getLabel loc)
         then Just loc
-        else
-            case firstChild loc of
-                Just start -> walk start
-                Nothing -> Nothing
-    -- walk :: TreeLoc (View a) -> Maybe (TreeLoc (View a))
+        else walk =<< firstChild loc
     walk childLoc = case selectOn p childLoc of
         Nothing -> right childLoc >>= walk
         Just childLoc' -> Just childLoc'
