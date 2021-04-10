@@ -2,6 +2,7 @@
 
 module Graphics.Scene
     ( Scene(..)
+    , SceneName(..)
     , SceneContext(..)
     , createScene
     , createSceneContext
@@ -63,9 +64,8 @@ createScene window worldRef contextRef = Scene
 
 data SceneName = Incal | Polygonisation | CubeRoom
 
-createSceneContext :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (SceneContext os)
-createSceneContext window = do
-    let sceneName = Polygonisation
+createSceneContext :: Window os RGBAFloat Depth -> SceneName -> ContextT GLFW.Handle os IO (SceneContext os)
+createSceneContext window sceneName = do
     renderer <- case sceneName of
         Incal -> createIncalRenderer window
         Polygonisation -> createPolygonisationRenderer window
@@ -167,7 +167,7 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
         context <- liftIO $ readIORef contextRef
         let Just (_, frameBufferGroup) = renderContextFrameBufferGroup (sceneContextRenderContext context)
             tex = frameBufferGroupOcclusionTex frameBufferGroup
-            V2 w h = texture2DSizes tex !! 0
+            V2 w h = head (texture2DSizes tex)
         saveDepthTexture (w, h) tex "occlusion.png"
         liftIO $ infoM "Hadron" "Depth map saved"
         return $ Just (createScene window worldRef contextRef)
@@ -177,7 +177,7 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
         context <- liftIO $ readIORef contextRef
         let Just (_, frameBufferGroup) = renderContextFrameBufferGroup (sceneContextRenderContext context)
             tex = frameBufferGroupPositionTex frameBufferGroup
-            V2 w h = texture2DSizes tex !! 0
+            V2 w h = head (texture2DSizes tex)
         saveTexture (w, h) tex "position.png"
         liftIO $ infoM "Hadron" "Color buffer saved"
         return $ Just (createScene window worldRef contextRef)
@@ -187,10 +187,10 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
         context <- liftIO $ readIORef contextRef
         let
             moves = sceneContextCameraMoves context
-            handleKey = if ks == GLFW.KeyState'Released then Map.delete else flip (Map.insertWith (\i n -> min 10 (n * 10))) 1
+            handleKey = if ks == GLFW.KeyState'Released then Map.delete else flip (Map.insertWith (\i n -> i)) 50
             moves' = case k of
                 GLFW.Key'Space -> handleKey GoUp moves
-                GLFW.Key'LeftControl -> handleKey GoDown moves
+                GLFW.Key'LeftControl -> handleKey GoDown moves -- No auto-repeat on a modifier key.
                 GLFW.Key'W -> handleKey GoForth moves
                 GLFW.Key'S -> handleKey GoBack moves
                 GLFW.Key'A -> handleKey GoLeft moves

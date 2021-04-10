@@ -198,7 +198,9 @@ instance FragmentInput (FogS V) where
 ------------------------------------------------------------------------------------------------------------------------
 
 data ShaderConfig = ShaderConfig
-    { shaderConfigCameraPosition :: !(V3 Float)
+    { shaderConfigViewPortOffset :: !(V2 Float)
+
+    , shaderConfigCameraPosition :: !(V3 Float)
 
     , shaderConfigProjection :: !(M44 Float)
     , shaderConfigCamera :: !(M44 Float)
@@ -214,7 +216,9 @@ data ShaderConfig = ShaderConfig
     }
 
 data ShaderConfigB = ShaderConfigB
-    { shaderConfigCameraPositionB :: !(B3 Float)
+    { shaderConfigViewPortOffsetB :: !(B2 Float)
+
+    , shaderConfigCameraPositionB :: !(B3 Float)
 
     , shaderConfigProjectionB :: !(V4 (B4 Float))
     , shaderConfigCameraB :: !(V4 (B4 Float))
@@ -231,12 +235,14 @@ data ShaderConfigB = ShaderConfigB
 
 instance BufferFormat ShaderConfigB where
     type HostFormat ShaderConfigB = ShaderConfig
-    toBuffer = proc ~(ShaderConfig a b c d e f g h i) -> do
-            ((a', b', c', d', e', f'), (g', h', i')) <- toBuffer -< ((a, b, c, d, e, f), (g, h, i))
-            returnA -< (ShaderConfigB a' b' c' d' e' f' g' h' i')
+    toBuffer = proc ~(ShaderConfig a b c d e f g h i j) -> do
+            ((a', b', c', d', e', f'), (g', h', i', j')) <- toBuffer -< ((a, b, c, d, e, f), (g, h, i, j))
+            returnA -< (ShaderConfigB a' b' c' d' e' f' g' h' i' j')
 
 data ShaderConfigS x = ShaderConfigS
-    { shaderConfigCameraPositionS :: !(V3 (S x Float))
+    { shaderConfigViewPortOffsetS :: !(V2 (S x Float))
+
+    , shaderConfigCameraPositionS :: !(V3 (S x Float))
 
     , shaderConfigProjectionS :: !(M44 (S x Float))
     , shaderConfigCameraS :: !(M44 (S x Float))
@@ -253,21 +259,21 @@ data ShaderConfigS x = ShaderConfigS
 
 instance UniformInput ShaderConfigB where
     type UniformFormat ShaderConfigB x = ShaderConfigS x
-    toUniform = proc ~(ShaderConfigB a b c d e f g h i) -> do
-            ((a', b', c', d', e', f'), (g', h', i')) <- toUniform -< ((a, b, c, d, e, f), (g, h, i))
-            returnA -< (ShaderConfigS a' b' c' d' e' f' g' h' i')
+    toUniform = proc ~(ShaderConfigB a b c d e f g h i j) -> do
+            ((a', b', c', d', e', f'), (g', h', i', j')) <- toUniform -< ((a, b, c, d, e, f), (g, h, i, j))
+            returnA -< (ShaderConfigS a' b' c' d' e' f' g' h' i' j')
 
 instance VertexInput ShaderConfig where
     type VertexFormat ShaderConfig = ShaderConfigS V
-    toVertex = proc ~(ShaderConfig a b c d e f g h i) -> do
-            ((a', b', c', d', e', f'), (g', h', i')) <- toVertex -< ((a, b, c, d, e, f), (g, h, i))
-            returnA -< (ShaderConfigS a' b' c' d' e' f' g' h' i')
+    toVertex = proc ~(ShaderConfig a b c d e f g h i j) -> do
+            ((a', b', c', d', e', f'), (g', h', i', j')) <- toVertex -< ((a, b, c, d, e, f), (g, h, i, j))
+            returnA -< (ShaderConfigS a' b' c' d' e' f' g' h' i' j')
 
 instance FragmentInput (ShaderConfigS V) where
     type FragmentFormat (ShaderConfigS V) = ShaderConfigS F
-    toFragment = proc ~(ShaderConfigS a b c d e f g h i) -> do
-            ((a', b', c', d', e', f'), (g', h', i')) <- toFragment -< ((a, b, c, d, e, f), (g, h, i))
-            returnA -< (ShaderConfigS a' b' c' d' e' f' g' h' i')
+    toFragment = proc ~(ShaderConfigS a b c d e f g h i j) -> do
+            ((a', b', c', d', e', f'), (g', h', i', j')) <- toFragment -< ((a, b, c, d, e, f), (g, h, i, j))
+            returnA -< (ShaderConfigS a' b' c' d' e' f' g' h' i' j')
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -580,7 +586,8 @@ data LightingShaderEnvironment os = LightingShaderEnvironment
 lightingShader :: Window os RGBAFloat Depth -> Buffer os (Uniform ShaderConfigB) -> Shader os (LightingShaderEnvironment os) ()
 lightingShader window shaderConfigUniformBuffer = do
     config <- getUniform (const (shaderConfigUniformBuffer, 0))
-    let camPos = shaderConfigCameraPositionS config
+    let V2 dx dy = shaderConfigViewPortOffsetS config
+        camPos = shaderConfigCameraPositionS config
         normMat = (shaderConfigTransformationS config)^._m33
         shadowMat = shaderConfigShadowS config
         lightingContext =
@@ -622,7 +629,7 @@ lightingShader window shaderConfigUniformBuffer = do
 
         litFrags = flip withRasterizedInfo frags $ \_ f ->
             let (V4 x y _ _) = rasterizedFragCoord f
-                texCoords = V2 (x / w) (y / h)
+                texCoords = V2 ((x - dx) / w) ((y - dy) / h)
                 position = positionSample texCoords
                 normal = normalSample texCoords
                 material = materialSample texCoords
@@ -738,7 +745,7 @@ normalShader window shaderConfigUniformBuffer = do
     lines :: PrimitiveStream Lines (V3 VFloat) <- toPrimitiveStream normalShaderPrimitives
     let
         projectedLines :: PrimitiveStream Lines (V4 VFloat, ())
-        projectedLines = (\p -> (viewProjMat !* (v3To4 p 1), ())) <$> lines
+        projectedLines = (\p -> (viewProjMat !* v3To4 p 1, ())) <$> lines
 
         getRasterOptions env = (Front, normalShaderViewport env, DepthRange 0 1)
 

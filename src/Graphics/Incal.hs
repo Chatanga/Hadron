@@ -17,6 +17,7 @@ import "lens" Control.Lens
 import Data.Int
 
 import Linear
+import Graphics.Color
 import Graphics.GPipe
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
@@ -75,7 +76,7 @@ createIncalRenderer window = do
 
         fog = Fog (V4 0.5 0.5 0.5 1) 10 100 0.2
 
-        renderShadow bounds frameBufferGroup camera sun buffers = do
+        renderShadow bounds@((x, y), _) frameBufferGroup camera sun buffers = do
             let
                 r = far / 25 -- 50
                 projectionMat = ortho (-r) r (-r) r (-r) r
@@ -93,6 +94,7 @@ createIncalRenderer window = do
                 shadowMat = projectionMat !*! cameraMat
 
             writeBuffer shaderConfigUniformBuffer 0 [ShaderConfig
+                (fromIntegral <$> V2 x y)
                 (cameraPosition camera)
                 projectionMat
                 cameraMat
@@ -108,7 +110,7 @@ createIncalRenderer window = do
 
             render $ do
                 let shadowTex = frameBufferGroupShadowTex frameBufferGroup
-                    shadowTexSize = texture2DSizes shadowTex !! 0
+                    shadowTexSize = head (texture2DSizes shadowTex)
                 sImage <- getTexture2DImage shadowTex 0
                 clearImageDepth sImage 1
                 primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
@@ -136,6 +138,7 @@ createIncalRenderer window = do
                     (getUp camera)
 
             writeBuffer shaderConfigUniformBuffer 0 [ShaderConfig
+                (fromIntegral <$> V2 x y)
                 (cameraPosition camera)
                 projectionMat
                 cameraMat
@@ -150,6 +153,7 @@ createIncalRenderer window = do
             writeBuffer pointLightUniformBuffer 0 lights
 
             let viewPort = ViewPort (V2 x y) (V2 w h)
+                viewPort' = ViewPort (V2 0 0) (V2 w h)
 
             {- I don’t know if having multiple calls to 'render' is a workaround
             to some bugs (see https://github.com/tobbebex/GPipe-Core/issues/50)
@@ -176,21 +180,21 @@ createIncalRenderer window = do
                 clearImageColor nImage 0
                 clearImageColor mImage 0
                 primArray <- mconcat <$> mapM (fmap (toPrimitiveArray TriangleList) . newVertexArray) buffers
-                compiledDeferredShader $ DeferredShaderEnvironment viewPort primArray dImage pImage nImage mImage
+                compiledDeferredShader $ DeferredShaderEnvironment viewPort' primArray dImage pImage nImage mImage
 
             -- SSAO
             render $ do
                 oImage <- getTexture2DImage occlusionTex 0
                 clearImageDepth oImage 1
                 screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
-                compiledSsaoShader $ SsaoShaderEnvironment viewPort screenPrimArray oImage positionTex normalTex sampleKernelTex noiseTex
+                compiledSsaoShader $ SsaoShaderEnvironment viewPort' screenPrimArray oImage positionTex normalTex sampleKernelTex noiseTex
 
             -- SSAO Bluring
             render $ do
                 bImage <- getTexture2DImage blurredOcclusionTex 0
                 clearImageDepth bImage 1
                 screenPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray screenBuffer
-                compiledBlurShader $ BlurShaderEnvironment viewPort screenPrimArray bImage occlusionTex
+                compiledBlurShader $ BlurShaderEnvironment viewPort' screenPrimArray bImage occlusionTex
 
             -- Lighting
             render $ do

@@ -67,7 +67,7 @@ createScenicUI :: Window os f Depth
     -> ScenicUI os
 createScenicUI window currentWorld currentContext = createUI ui where
     masterScene = createScene window currentWorld currentContext
-    radarScene = createScene window currentWorld currentContext
+    -- radarScene = createScene window currentWorld otherCurrentContext
 
     handleEvent = sceneHandleEvent
 
@@ -120,7 +120,7 @@ runApplication name = runContextT GLFW.defaultHandleConfig $ do
         (GLFW.defaultWindowConfig name){ GLFW.configWidth = w, GLFW.configHeight = h }
 
     currentWorld <- liftIO . newIORef =<< createWorld window
-    currentContext <- liftIO . newIORef =<< createSceneContext window
+    currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation
     uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext
     quitRef <- liftIO $ newIORef False
 
@@ -182,7 +182,7 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
     liftIO (readIORef uiRef) >>= animateUI frameDuration >>= (liftIO . writeIORef uiRef)
 
     -- Render the frame.
-    render $ clearWindowColor window 0.5
+    -- render $ clearWindowColor window 0.5
     ui <- liftIO $ readIORef uiRef
     when (w > 0) $ do -- avoid an upcoming divide by zero
         renderViewTree (w, h) (uiRoot ui)
