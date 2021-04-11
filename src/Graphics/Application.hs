@@ -120,7 +120,7 @@ runApplication name = runContextT GLFW.defaultHandleConfig $ do
         (GLFW.defaultWindowConfig name){ GLFW.configWidth = w, GLFW.configHeight = h }
 
     currentWorld <- liftIO . newIORef =<< createWorld window
-    currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation
+    currentContext <- liftIO . newIORef =<< createSceneContext window CubeRoom
     uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext
     quitRef <- liftIO $ newIORef False
 
