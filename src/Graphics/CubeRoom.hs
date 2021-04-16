@@ -228,21 +228,13 @@ createCubeRoomRenderer window = do
 
     writeBuffer fogBuffer 0 [Fog (v3To4 skyBlue 1) 10 100 0.2]
 
-    let renderIt :: RenderContext os
-            -> ((Int, Int), (Int, Int))
-            -> Camera
-            -> DirectionLight
-            -> [PointLight]
-            -> [Buffer os (B3 Float, B3 Float)]
-            -> [Buffer os (B3 Float)]
-            -> ContextT GLFW.Handle os IO (RenderContext os)
-        renderIt _ bounds camera sun lights buffers normalBuffers = do
+    let renderIt _ bounds camera _ sun lights buffers normalBuffers = do
 
             writeBuffer sunBuffer 0 [sun]
 
             let ((x, y) , (w, h)) = bounds
                 -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) near far
+                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
                 -- Eye, Center, Up
                 cameraMat = lookAt
                     cameraPos

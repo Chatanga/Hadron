@@ -22,14 +22,14 @@ import System.Log.Logger
 
 import Common.Random
 
-import Graphics.Geometry
-import Graphics.View
-import Graphics.Incal
-import Graphics.Shaders
-import Graphics.World
-import Graphics.Texture
-import Graphics.Polygonisation
 import Graphics.CubeRoom
+import Graphics.Geometry
+import Graphics.Incal
+import Graphics.Polygonisation
+import Graphics.Shaders
+import Graphics.Texture
+import Graphics.View
+import Graphics.World
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -64,14 +64,14 @@ createScene window worldRef contextRef = Scene
 
 data SceneName = Incal | Polygonisation | CubeRoom
 
-createSceneContext :: Window os RGBAFloat Depth -> SceneName -> ContextT GLFW.Handle os IO (SceneContext os)
-createSceneContext window sceneName = do
+createSceneContext :: Window os RGBAFloat Depth -> SceneName -> String -> ContextT GLFW.Handle os IO (SceneContext os)
+createSceneContext window sceneName cameraName = do
     renderer <- case sceneName of
         Incal -> createIncalRenderer window
         Polygonisation -> createPolygonisationRenderer window
         CubeRoom -> createCubeRoomRenderer window
     return $ SceneContext
-        "first-camera"
+        cameraName
         Map.empty
         (0, 0)
         Nothing
@@ -89,13 +89,14 @@ display window worldRef contextRef bounds = do
     context <- liftIO $ readIORef contextRef
 
     let camera = fromJust (lookup (sceneContextCameraName context) (worldCameras world))
+        cameras = map snd (worldCameras world)
         sun = worldSun world
         lights = map (\(FireBall p _ c _) -> PointLight p c) (worldFireBalls world)
         buffers = worldBuffers world
         normalBuffers = worldNormalBuffers world
         renderContext = sceneContextRenderContext context
 
-    newRenderContext <- renderContextRenderAction renderContext renderContext bounds camera sun lights buffers normalBuffers
+    newRenderContext <- renderContextRenderAction renderContext renderContext bounds camera cameras sun lights buffers normalBuffers
 
     liftIO $ writeIORef contextRef (context{ sceneContextRenderContext = newRenderContext })
 
@@ -182,6 +183,14 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
         liftIO $ infoM "Hadron" "Color buffer saved"
         return $ Just (createScene window worldRef contextRef)
 
+    -- Next camera.
+    | k == GLFW.Key'Tab && ks == GLFW.KeyState'Pressed = do
+        world <- liftIO $ readIORef worldRef
+        context <- liftIO $ readIORef contextRef
+        let nextCameraName = dropWhile (/= sceneContextCameraName context) (cycle (map fst (worldCameras world))) !! 1
+        liftIO $ writeIORef contextRef context{ sceneContextCameraName = nextCameraName }
+        return $ Just (createScene window worldRef contextRef)
+
     -- Move the camera using WASD keys (note that the keyboard layout is not taken into account).
     | otherwise = do
         context <- liftIO $ readIORef contextRef
@@ -214,13 +223,13 @@ manipulate window worldRef contextRef size (EventMouseButton b bs _) = do
     newFireBalls <- if b == GLFW.MouseButton'2 && bs == GLFW.MouseButtonState'Pressed
         then do
             let (width, height) = size
-                projectionMat = perspective (cameraFov camera) (width / height) near far
+                projectionMat = perspective (cameraFov camera) (width / height) (cameraNear camera) (cameraFar camera)
                 cameraMat = lookAt'
                     (cameraPosition camera)
                     (cameraPosition camera + getSight camera)
                     (getUp camera)
                 cursor = sceneContextCursorPosition context
-                (V4 x y z _) = toWorld (width, height) cursor projectionMat cameraMat
+                (V4 x y z _) = toWorld (width, height) (cameraNear camera, cameraNear camera) cursor projectionMat cameraMat
                 direction = normalize (V3 x y z - cameraPosition camera)
             color <- liftIO $ runRandomIO $ V3
                 <$> getRandomR (0, 1)

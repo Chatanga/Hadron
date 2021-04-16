@@ -3,8 +3,6 @@
 module Graphics.Geometry
     ( BoundingInfo(..)
     , Camera(..)
-    , near
-    , far
     , getSight
     , getBearing
     , getLeft
@@ -46,10 +44,9 @@ data Camera = Camera
     , cameraAzimuth :: !Float
     -- The vertical field of view.
     , cameraFov :: !Float
-    } deriving (Show)
-
-near = 1 :: Float
-far = 1000 :: Float
+    , cameraNear :: !Float
+    , cameraFar :: !Float
+    } deriving (Eq, Show)
 
 getSight :: Camera -> V3 Float
 getSight camera = rotate (axisAngle (getLeft camera) (cameraAltitude camera)) (getBearing camera)
@@ -63,8 +60,8 @@ getLeft camera = V3 (cos a) (sin a) 0 where a = cameraAzimuth camera + pi / 2
 getUp :: Camera -> V3 Float
 getUp _ = V3 0 0 1
 
-toWorld :: (Float, Float) -> (Float, Float) -> M44 Float -> M44 Float -> V4 Float
-toWorld (w, h) (x, y) projection camera = rectify target where
+toWorld :: (Float, Float) -> (Float, Float) -> (Float, Float) -> M44 Float -> M44 Float -> V4 Float
+toWorld (w, h) (x, y) (near, far) projection camera = rectify target where
     viewport = V4
         (V4 (w/2) 0 0 (w/2))
         (V4 0 (-h/2) 0 (h/2))

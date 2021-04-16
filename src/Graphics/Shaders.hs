@@ -298,6 +298,7 @@ data RenderContext os = RenderContext
         :: RenderContext os
         -> ((Int, Int), (Int, Int))
         -> Camera
+        -> [Camera]
         -> DirectionLight
         -> [PointLight]
         -> [Buffer os (B3 Float, B3 Float)]

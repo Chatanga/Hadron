@@ -7,7 +7,7 @@ dependencies:
 - base
 - array
 - GPipe == 2.2.5.1
-- GPipe-GLFW == 1.4.1.3.1
+- GPipe-GLFW == 1.5.0.0
 - lens
 - JuicyPixels
 - linear

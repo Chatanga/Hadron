@@ -28,7 +28,7 @@ type VerticeIndice = Int
 type EdgeIndice = Int
 type FaceIndice = Int
 
-cube :: [V3 Int]
+cube :: Num a => [V3 a]
 cube =
     [ V3 0 0 0
     , V3 1 0 0

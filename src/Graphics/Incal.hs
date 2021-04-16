@@ -60,7 +60,7 @@ createIncalRenderer window = do
     compiledScreenShader <- compileShader . silenceShader $ screenShader window
     compiledNormalShader <- compileShader $ normalShader window shaderConfigUniformBuffer
 
-    let renderAction context bounds camera sun lights buffers normalBuffers = do
+    let renderAction context bounds camera _ sun lights buffers normalBuffers = do
             let (_, (w, h)) = bounds
                 size = V2 w h
             frameBufferGroup <- case renderContextFrameBufferGroup context of
@@ -78,7 +78,7 @@ createIncalRenderer window = do
 
         renderShadow bounds@((x, y), _) frameBufferGroup camera sun buffers = do
             let
-                r = far / 25 -- 50
+                r = cameraNear camera / 25 -- 50
                 projectionMat = ortho (-r) r (-r) r (-r) r
                 localPosition = V3 0 0 0
                 cameraMat = lookAt'
@@ -130,7 +130,7 @@ createIncalRenderer window = do
 
                 ((x, y), (w, h)) = bounds
                 -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) near far
+                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
                 -- Eye, Center, Up
                 cameraMat = lookAt
                     (cameraPosition camera)

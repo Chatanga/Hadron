@@ -67,17 +67,8 @@ createScenicUI :: Window os f Depth
     -> ScenicUI os
 createScenicUI window currentWorld currentContext = createUI ui where
     masterScene = createScene window currentWorld currentContext
-    -- radarScene = createScene window currentWorld otherCurrentContext
-
     handleEvent = sceneHandleEvent
-
-    ui =
-        Node (createViewWithParams False adaptativeLayout handleEvent Nothing)
-        [   Node (createViewWithParams True (anchorLayout topRighCorner) handleEvent (Just masterScene))
-            [   -- Node (createViewWithParams False (fixedLayout (250, 250)) handleEvent  (Just radarScene)) []
-            ]
-        ]
-    topRighCorner = [AnchorConstraint (Just 50) (Just 50) Nothing Nothing]
+    ui = Node (createViewWithParams True defaultLayout handleEvent (Just masterScene)) []
 
 {- Animate all scenes into the UI. Note that animating a scene is not the same
 thing as animating the world displayed by the scene. Worlds are animated
@@ -112,7 +103,7 @@ renderViewTree screenSize viewTree = do
 ------------------------------------------------------------------------------------------------------------------------
 
 runApplication :: String -> IO ()
-runApplication name = runContextT GLFW.defaultHandleConfig $ do
+runApplication name = runContextT (GLFW.defaultHandleConfigWithVersion (4, 5)) $ do
     let (w , h) = (800, 600)
 
     window <- newWindow
@@ -120,7 +111,7 @@ runApplication name = runContextT GLFW.defaultHandleConfig $ do
         (GLFW.defaultWindowConfig name){ GLFW.configWidth = w, GLFW.configHeight = h }
 
     currentWorld <- liftIO . newIORef =<< createWorld window
-    currentContext <- liftIO . newIORef =<< createSceneContext window CubeRoom
+    currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation "primary-camera"
     uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext
     quitRef <- liftIO $ newIORef False
 

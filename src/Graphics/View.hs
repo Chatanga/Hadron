@@ -26,6 +26,8 @@ import Data.Tree.Zipper
 
 import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 
+import Common.Debug
+
 ------------------------------------------------------------------------------------------------------------------------
 
 data UI m a = UI
@@ -241,10 +243,19 @@ processEvent ui event@(EventKey k _ ks _) = do
     case selectOn viewHasFocus (fromTree (uiRoot ui)) of
         Nothing -> return ui
         Just loc -> do
-            ml <- bubbleUp (\l -> viewHandleEvent (getLabel l) event l) loc
-            case ml of
-                Just l -> return $ ui{ uiRoot = toTree (root l) }
-                Nothing -> return (ui{ uiTerminated = True })
+            if False && ks == GLFW.KeyState'Released && k == GLFW.Key'Tab
+            then do
+                let setFocus b = modifyLabel (\v -> v{ viewHasFocus = b })
+                    l = setFocus False loc
+                    l' = case right l of
+                        Just rl -> setFocus True rl
+                        Nothing -> setFocus True (fromJust (firstChild (fromJust (parent l))))
+                return ui{ uiRoot = toTree (root l') }
+            else do
+                ml <- bubbleUp (\l -> viewHandleEvent (getLabel l) event l) loc
+                case ml of
+                    Just l -> return ui{ uiRoot = toTree (root l) }
+                    Nothing -> return ui{ uiTerminated = True }
 
 processEvent ui event = error $ "Unhandled event type: " ++ show event
 

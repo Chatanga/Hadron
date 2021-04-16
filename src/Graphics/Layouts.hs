@@ -1,5 +1,8 @@
 module Graphics.Layouts
     ( fixedLayout
+    , SplitLayoutOrientation(..)
+    , splitLayout
+    , BordelLayoutPosition(..)
     , borderLayout
     , AnchorConstraint(..)
     , anchorLayout
@@ -13,12 +16,61 @@ import Graphics.View
 
 ------------------------------------------------------------------------------------------------------------------------
 
+getWidth :: Tree (View m a) -> Int
+getWidth = fst . snd . viewLocalBounds . rootLabel
+
+getHeight :: Tree (View m a) -> Int
+getHeight = snd . snd . viewLocalBounds . rootLabel
+
 setBounds position size tree = layoutSetSize (viewLayout (rootLabel tree')) size tree' where
     tree' = setPosition position tree
 
 fixedLayout (w, h) = Layout
     (const (Just w, Just h))
     setSize
+
+{-
+         Horizontal (0.3)
+    ┏━━━━━━━━┯━━━━━━━━━━━━━━━━━┓
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃  left  │      right      ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┃        │                 ┃
+    ┗━━━━━━━━┷━━━━━━━━━━━━━━━━━┛
+-}
+
+data SplitLayoutOrientation = Vertical | Horizontal deriving (Eq, Show)
+
+getHeight' c = snd (layoutGetNaturalSize (viewLayout (rootLabel c)) c)
+getWidth' c = snd (layoutGetNaturalSize (viewLayout (rootLabel c)) c)
+
+sum' xs = if null xs then Nothing else Just (sum xs)
+maximum' xs = if null xs then Nothing else Just (maximum xs)
+
+splitLayout :: SplitLayoutOrientation -> Float -> Layout m a
+splitLayout Vertical ratio = Layout getter setter where
+    getter t = (maximum' (mapMaybe getWidth' (subForest t)), sum' (mapMaybe getHeight' (subForest t)))
+    setter (w, h) t =
+        let [up, down] = subForest t
+            fh = floor (fromIntegral h * ratio)
+            up' = setBounds (0, 0) (w, fh) up
+            down' = setBounds (0, fh) (w, h - fh) down
+        in  setSize (w, h) t{ subForest = [up', down'] }
+splitLayout Horizontal ratio = Layout getter setter where
+    getter t = (sum' (mapMaybe getWidth' (subForest t)), maximum' (mapMaybe getHeight' (subForest t)))
+    setter (w, h) t =
+        let [left, right] = subForest t
+            fw = floor (fromIntegral w * ratio)
+            left' = setBounds (0, 0) (fw, h) left
+            right' = setBounds (fw, 0) (w - fw, h) right
+        in  setSize (w, h) t{ subForest = [left', right'] }
 
 {-
     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -36,7 +88,7 @@ fixedLayout (w, h) = Layout
     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 -}
 
-data BordelLayoutPosition = Center | Top | Left | Bottom | Right
+data BordelLayoutPosition = Center | Top | Left | Bottom | Right deriving (Eq, Show)
 
 borderLayout :: [BordelLayoutPosition] -> Layout m a
 borderLayout positions = undefined -- TODO
@@ -44,7 +96,7 @@ borderLayout positions = undefined -- TODO
 {-
     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     ┃               ▲          ┃
-    ┃               ┆ top      ┃
+    ┃               │ top      ┃
     ┃               ▼          ┃
     ┃           ┌───────┐      ┃
     ┃    left   │       │ right┃
@@ -52,7 +104,7 @@ borderLayout positions = undefined -- TODO
     ┃           │       │      ┃
     ┃           └───────┘      ┃
     ┃               ▲          ┃
-    ┃               ┆ bottom   ┃
+    ┃               │ bottom   ┃
     ┃               ▼          ┃
     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 -}
