@@ -11,7 +11,7 @@ module Graphics.World
 
 import Linear
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Graphics.Geometry
 import Graphics.Shaders

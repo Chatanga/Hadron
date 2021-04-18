@@ -19,7 +19,7 @@ import Data.Int
 import Linear
 import Graphics.Color
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Graphics.Geometry
 import Graphics.Texture

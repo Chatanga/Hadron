@@ -8,6 +8,19 @@ This toy project currently aims at implementing the procedural terrain generatio
 It's a work in progress which relies on [an experimental version of GPipe](https://github.com/Chatanga/GPipe-Core/tree/transform-feedback)
 to handle missing features such as geometry shaders and transform feedbacks.
 
+**Controls:**
+
+* left mouse drag: look around
+* W: forward
+* A: left
+* S: backward
+* D: right
+* SPACE: up
+* CTRL: down
+* TAB: next camera
+
+Note: keyboard mapping is _not_ taken into account.
+
 References
 ----------
 

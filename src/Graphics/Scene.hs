@@ -17,7 +17,7 @@ import qualified Data.Map as Map
 
 import Linear
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
 
 import Common.Random

@@ -15,7 +15,7 @@ import Data.Tree.Zipper
 import Numeric
 
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
 
 import Graphics.Layouts

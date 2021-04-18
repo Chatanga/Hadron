@@ -16,7 +16,7 @@ import Data.Int (Int8, Int32)
 import Data.Word (Word8, Word16, Word32)
 
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Debug
 import Graphics.Color
@@ -98,11 +98,10 @@ createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer = d
 
 createCubesRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
-    Float ->
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
     Buffer os (B3 Float) ->
     ContextT ctx os m (ViewPort -> Render os ())
-createCubesRenderer window scale projectionBuffer offsetBuffer = do
+createCubesRenderer window projectionBuffer offsetBuffer = do
 
     let floatCube :: [V3 Float]
         floatCube = map (fmap fromIntegral) cube
@@ -222,7 +221,7 @@ createCubeRoomRenderer window = do
     blockBuffer :: Buffer os (B3 Float, B3 Float, B Int32) <- newBuffer (length blocks)
     writeBuffer blockBuffer 0 blocks
 
-    cubesRenderer <- createCubesRenderer window 32 projectionBuffer cubeOffsetBuffer
+    cubesRenderer <- createCubesRenderer window projectionBuffer cubeOffsetBuffer
     cornersRenderer <- createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstanceBuffer
     blocksRenderer <- createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer
 
@@ -233,15 +232,7 @@ createCubeRoomRenderer window = do
             writeBuffer sunBuffer 0 [sun]
 
             let ((x, y) , (w, h)) = bounds
-                -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
-                -- Eye, Center, Up
-                cameraMat = lookAt
-                    cameraPos
-                    (cameraPos + getSight camera)
-                    (getUp camera)
-                cameraPos = cameraPosition camera
-            writeBuffer projectionBuffer 0 [(projectionMat, cameraMat, cameraPos)]
+            writeBuffer projectionBuffer 0 [createProjection bounds camera]
 
             render $ do
                 clearWindowColor window (v3To4 skyBlue 1)

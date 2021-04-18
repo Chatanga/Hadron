@@ -24,7 +24,7 @@ import Data.Maybe
 import Data.Tree
 import Data.Tree.Zipper
 
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Debug
 

@@ -6,16 +6,20 @@ module Graphics.Polygonisation
 where
 
 import Prelude hiding ((.), id, (<*))
+import Control.Applicative (liftA2)
 import Control.Category (Category((.)), id)
 import Control.Lens ((&), (<&>), (^.))
 import Control.Monad
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception (MonadException)
+import Data.Bifunctor
 import Data.Int (Int8, Int32)
+import Data.List ((\\), partition)
+import Data.Maybe
 import Data.Word (Word8, Word16, Word32)
 
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Debug
 import Graphics.MarchingCube
@@ -39,8 +43,21 @@ What I’m missing:
 
 ----------------------------------------------------------------------------------------------------------------------
 
-blockSize :: Int
+blockSize :: Num a => a
 blockSize = 32
+
+-- Normalized device coordinate
+ndcFrustum :: Num a => [V3 a]
+ndcFrustum =
+    [ V3 (-1) (-1) (-1)
+    , V3 1 (-1) (-1)
+    , V3 (-1) 1 (-1)
+    , V3 1 1 (-1)
+    , V3 (-1) (-1) 1
+    , V3 1 (-1) 1
+    , V3 (-1) 1 1
+    , V3 1 1 1
+    ]
 
 createFillDensityRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Buffer os (Uniform (B3 Float)) ->
@@ -90,7 +107,7 @@ createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
         let sample i p a b = sample3D (noiseSamplers !! i) SampleAuto Nothing Nothing (p * a / 256) * b
             f p =
                 let p' = p + offset
-                    density = p'^._z / fromIntegral blockSize
+                    density = p'^._z / blockSize
                     -- density = (norm p' - 40) / 8
                 in  density
                     + sample 0 p' 4.03 0.25
@@ -239,7 +256,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
 
                     getNormal :: V3 VFloat -> V3 VFloat
                     getNormal v = normal where
-                        sample = sample3D floatDensitySampler (SampleLod 0) Nothing Nothing . (/ fromIntegral blockSize) . (v +)
+                        sample = sample3D floatDensitySampler (SampleLod 0) Nothing Nothing . (/ blockSize) . (v +)
                         grad = V3
                             (sample (V3 1 0 0) - sample (V3 (-1) 0 0))
                             (sample (V3 0 1 0) - sample (V3 0 (-1) 0))
@@ -327,11 +344,8 @@ createBlockOutlineRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, M
     ContextT ctx os m (ViewPort -> Render os ())
 createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
 
-    let floatCube :: [V3 Float]
-        floatCube = map (fmap fromIntegral) cube
-
-    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length floatCube)
-    writeBuffer blockOutlineBuffer 0 floatCube
+    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length cube)
+    writeBuffer blockOutlineBuffer 0 cube
 
     let edges = concatMap (\(i, j) -> [i, j]) $ filter (\(i, j) -> j > i) cubeEdges
     blockOutlineIndexBuffer :: Buffer os (BPacked Word8) <- newBuffer (length edges)
@@ -349,12 +363,12 @@ createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
             projectedLines =
                 (\p -> (modelViewProj !* p, ())) .
                 (\p -> point (p + offset)) .
-                (* fromIntegral blockSize) <$>
+                (* blockSize) <$>
                 lines
 
         let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
         fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions projectedLines
-            <&> withRasterizedInfo (\_ p -> (pure 1, rasterizedFragCoord p ^. _z - 0.0000001))
+            <&> withRasterizedInfo (\_ p -> (point white, rasterizedFragCoord p ^. _z - 0.0000001))
 
         let colorOption = ContextColorOption NoBlending (pure True)
             depthOption = DepthOption Less True
@@ -365,6 +379,48 @@ createBlockOutlineRenderer window offsetBuffer projectionBuffer = do
             <$> newIndexArray blockOutlineIndexBuffer Nothing
             <*> newVertexArray blockOutlineBuffer
         shader (viewPort, (0, blockOutline))
+
+createBlockOutlinesRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
+    Window os RGBAFloat Depth ->
+    Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
+    Buffer os (B Float, B3 Float) ->
+    ContextT ctx os m (ViewPort -> Int -> Render os ())
+createBlockOutlinesRenderer window projectionBuffer offsetBuffer = do
+
+    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length cube)
+    writeBuffer blockOutlineBuffer 0 cube
+
+    let edges = concatMap (\(i, j) -> [i, j]) $ filter (\(i, j) -> j > i) cubeEdges
+    blockOutlineIndexBuffer :: Buffer os (BPacked Word8) <- newBuffer (length edges)
+    writeBuffer blockOutlineIndexBuffer 0 (map fromIntegral edges)
+
+    shader :: CompiledShader os (ViewPort, PrimitiveArray Lines (B3 Float, (B Float, B3 Float)))  <- compileShader $ do
+        (projectionMat, cameraMat, _) <- getUniform (const (projectionBuffer, 0))
+        let modelViewProj = projectionMat !*! cameraMat
+
+        lines :: PrimitiveStream Lines (V3 VFloat, (VFloat, V3 VFloat)) <- toPrimitiveStream snd
+        let
+            projectedLines :: PrimitiveStream Lines (V4 VFloat, ())
+            projectedLines =
+                (\p -> (modelViewProj !* p, ())) .
+                (\(p, (s, o)) -> point (s *^ p + o)) <$>
+                lines
+
+        let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
+        fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions projectedLines
+            <&> withRasterizedInfo (\_ p -> (point blue, rasterizedFragCoord p ^. _z - 0.0000001))
+
+        let colorOption = ContextColorOption NoBlending (pure True)
+            depthOption = DepthOption Less True
+        drawWindowColorDepth (const (window, colorOption, depthOption)) fs
+
+    return $ \viewport count -> do
+        blockOutline <- toPrimitiveArrayIndexedInstanced LineList
+            <$> newIndexArray blockOutlineIndexBuffer Nothing
+            <*> return (,)
+            <*> newVertexArray blockOutlineBuffer
+            <*> (takeVertices count <$> newVertexArray offsetBuffer)
+        shader (viewport, blockOutline)
 
 -- Too slow?
 createGridRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
@@ -401,7 +457,7 @@ createGridRenderer window projectionBuffer fogBuffer = do
             drawGridLine :: (V2 FFloat, FFloat) -> V4 FFloat
             drawGridLine (p@(V2 x y), camPosZ) = color' where
                 -- Pick a coordinate to visualize in a grid.
-                (coord, coord') = (p / fromIntegral blockSize, p / fromIntegral blockSize / 10)
+                (coord, coord') = (p / blockSize, p / blockSize / 10)
                 -- Compute anti-aliased renderContext-space grid lines.
                 V2 gx gy = abs (fract' (coord - 0.5) - 0.5) / (fwidth <$> coord)
                 V2 gx' gy' = abs (fract' (coord' - 0.5) - 0.5) / (fwidth <$> coord')
@@ -426,7 +482,7 @@ createGridRenderer window projectionBuffer fogBuffer = do
             blending = BlendRgbAlpha
                 (FuncAdd, FuncAdd)
                 (BlendingFactors SrcAlpha OneMinusSrcAlpha, BlendingFactors Zero Zero)
-                (pure 1)
+                (point white)
             colorOption = ContextColorOption blending (pure True)
             depthOption = DepthOption Less True
 
@@ -449,18 +505,6 @@ createFrustumRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadE
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
     ContextT ctx os m (ViewPort -> Render os ())
 createFrustumRenderer window projectionBuffer = do
-
-    let ndcFrustum =
-            [ V3 (-1) (-1) (-1)
-            , V3 1 (-1) (-1)
-            , V3 (-1) 1 (-1)
-            , V3 1 1 (-1)
-            , V3 (-1) (-1) 1
-            , V3 1 (-1) 1
-            , V3 (-1) 1 1
-            , V3 1 1 1
-            ]
-
     frustumBuffer :: Buffer os (B3 Float) <- newBuffer (length ndcFrustum)
     writeBuffer frustumBuffer 0 ndcFrustum
 
@@ -531,26 +575,16 @@ createPolygonisationRenderer window = do
     sunBuffer :: Buffer os (Uniform DirectionLightB) <- newBuffer 1
     projectionBuffer :: Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) <- newBuffer 2
     offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
+    outlineBuffer :: Buffer os (B Float, B3 Float) <- newBuffer 400
 
     blockRenderer <- createBlockRenderer window projectionBuffer fogBuffer sunBuffer
     blockOutlineRenderer <- createBlockOutlineRenderer window offsetBuffer projectionBuffer
+    blockOutlinesRenderer <- createBlockOutlinesRenderer window projectionBuffer outlineBuffer
     gridRenderer <- createGridRenderer window projectionBuffer fogBuffer
     frustumRenderer <- createFrustumRenderer window projectionBuffer
 
     writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.2]
     writeBuffer offsetBuffer 0 [pure 0]
-
-    let createProjection bounds camera =
-            let (_, (w, h)) = bounds
-                -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-                projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
-                -- Eye, Center, Up
-                cameraMat = lookAt
-                    cameraPos
-                    (cameraPos + getSight camera)
-                    (getUp camera)
-                cameraPos = cameraPosition camera
-            in  [(projectionMat, cameraMat, cameraPos)]
 
     let renderIt _ bounds camera cameras sun lights buffers normalBuffers = do
             let ((x, y), (w, h)) = bounds
@@ -559,19 +593,92 @@ createPolygonisationRenderer window = do
 
             let otherCamera = head (filter (/= camera) cameras)
 
-            writeBuffer projectionBuffer 0 (createProjection bounds camera)
-            writeBuffer projectionBuffer 1 (createProjection bounds otherCamera)
+            writeBuffer projectionBuffer 0
+                [ createProjection bounds camera
+                , createProjection bounds otherCamera
+                ]
 
-            -- Render blocks.
+            let blocks = take (bufferLength outlineBuffer) (selectBlocks bounds (head cameras))
+            writeBuffer outlineBuffer 0 blocks
+
             render $ do
                 clearWindowColor window (point skyBlue)
                 clearWindowDepth window 1
                 let viewPort = ViewPort (V2 x y) (V2 w h)
                 forM_ blockBuffers $ \blockBuffer -> blockRenderer (viewPort, blockBuffer)
-                blockOutlineRenderer viewPort
+                -- blockOutlineRenderer viewPort
                 frustumRenderer viewPort
+                blockOutlinesRenderer viewPort (length blocks)
                 gridRenderer viewPort
 
             return $ RenderContext Nothing renderIt
 
     return (RenderContext Nothing renderIt)
+
+selectBlocks :: ((Int, Int), (Int, Int)) -> Camera -> [(Float, V3 Float)]
+selectBlocks bounds camera = allBlocks where
+    (_, (w, h)) = bounds
+    cameraPos = cameraPosition camera
+    cameraMat = lookAt cameraPos (cameraPos + getSight camera) (getUp camera)
+
+    pieceWise f = foldl1 (\(V3 x1 y1 z1) (V3 x2 y2 z2) -> V3 (f x1 x2) (f y1 y2) (f z1 z2))
+
+    projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
+    modelViewProj = projectionMat !*! cameraMat
+    invModelViewProj = inv44 modelViewProj
+
+    frustum :: [V3 Float]
+    frustum = map (v4To3' . (invModelViewProj !*) . point) ndcFrustum
+
+    -- TODO Not enough!
+    cubeIntersectFrustum :: Int -> V3 Float -> Bool
+    cubeIntersectFrustum s b =
+        let box = map (\v -> b + v * fromIntegral s) cube -- An axis aligned cube to be precise.
+        in  any insideFrustum box || any (insideBox box) frustum
+
+    insideFrustum :: V3 Float -> Bool
+    insideFrustum =
+        (\(V3 x y z) -> x && y && z) .
+        fmap (\c -> (-1) <= c && c <= 1) .
+        v4To3' .
+        (modelViewProj !*) .
+        point
+
+    insideBox :: [V3 Float] -> V3 Float -> Bool
+    insideBox box (V3 x y z) =
+        let V3 xMin yMin zMin = pieceWise min box
+            V3 xMax yMax zMax = pieceWise max box
+        in  xMin <= x && x <= xMax &&
+            yMin <= y && y <= yMax &&
+            zMin <= z && z <= zMax
+
+    size = blockSize * 4
+
+    blocks :: [V3 Float]
+    blocks =
+        -- The AABB whose coordinates are multiple of 'size' containing the frustum.
+        let V3 xMin yMin zMin :: V3 Int = fmap (\n -> floor (n / fromIntegral size) * size) (pieceWise min frustum)
+            V3 xMax yMax zMax :: V3 Int = fmap (\n -> ceiling (n / fromIntegral size) * size) (pieceWise max frustum)
+        -- Divide it into blocks and filter out those outside the frustum.
+        in  filter (cubeIntersectFrustum size)
+                [ fromIntegral <$> V3 x y z
+                        | x <- [xMin, xMin+size .. xMax]
+                        , y <- [yMin, yMin+size .. yMax]
+                        , z <- [zMin, zMin+size .. zMax]
+                        ]
+
+    withSize s = map $ (,) (fromIntegral s)
+
+    divide 0 s _ bs = withSize s bs
+    divide depth s f bs =
+        let
+            s' = s `div` 2
+            f' = f / 2
+            center b = b + pure (fromIntegral s')
+            (farestBlocks, nearestBlocks) = partition (\b -> distance (center b) cameraPos > f') bs
+            subdivide b = [ b + (fromIntegral <$> (s' *^ V3 x y z)) | x <-[0..1], y <-[0..1], z <-[0..1] ]
+            subBlocks = filter (cubeIntersectFrustum s') (concatMap subdivide nearestBlocks)
+        in  withSize s farestBlocks ++ divide (depth - 1) s' f' subBlocks
+
+    allBlocks :: [(Float, V3 Float)]
+    allBlocks = divide 2 size (cameraFar camera) blocks

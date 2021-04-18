@@ -40,6 +40,7 @@ module Graphics.Shaders
     , poissonDisk
     , v3To4
     , v4To3
+    , v4To3'
     ) where
 
 import Prelude hiding ((<*))
@@ -54,7 +55,7 @@ import Data.Int
 
 import Linear
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Graphics.Geometry
 import Graphics.Texture

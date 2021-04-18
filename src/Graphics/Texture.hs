@@ -16,7 +16,7 @@ import System.Log.Logger
 import Codec.Picture as JP
 import Codec.Picture.Types
 import Graphics.GPipe
-import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
+import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Random
 

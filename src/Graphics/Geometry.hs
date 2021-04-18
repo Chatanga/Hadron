@@ -9,6 +9,7 @@ module Graphics.Geometry
     , getUp
     , toWorld
     , lookAt'
+    , createProjection
     --
     , noRotation
     , noTranslation
@@ -86,6 +87,19 @@ lookAt' eye center up =
         xd = -dot xa eye
         yd = -dot ya eye
         zd = dot za eye
+
+createProjection :: ((Int, Int), (Int, Int)) -> Camera -> (M44 Float, M44 Float, V3 Float)
+createProjection bounds camera =
+    let (_, (w, h)) = bounds
+        -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
+        projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
+        -- Eye, Center, Up
+        cameraMat = lookAt
+            cameraPos
+            (cameraPos + getSight camera)
+            (getUp camera)
+        cameraPos = cameraPosition camera
+    in  (projectionMat, cameraMat, cameraPos)
 
 ------------------------------------------------------------------------------------------------------------------------
 
