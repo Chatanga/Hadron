@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, PackageImports, FlexibleContexts, TypeFamilies, LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables, FlexibleContexts, TypeFamilies, LambdaCase #-}
 
 module Graphics.Texture
     ( loadImage
@@ -10,13 +10,12 @@ module Graphics.Texture
 
 import Control.Monad
 import Control.Monad.IO.Class
-import Data.Array
-
-import System.Log.Logger
 import Codec.Picture as JP
 import Codec.Picture.Types
+import Data.Array
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import System.Log.Logger
 
 import Common.Random
 

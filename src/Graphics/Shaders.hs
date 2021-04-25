@@ -1,6 +1,4 @@
-{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances #-}
-{-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.Shaders
     ( DirectionLight (..), DirectionLightB (..), DirectionLightS (..)
@@ -38,9 +36,6 @@ module Graphics.Shaders
     , reflect
     , getShadow
     , poissonDisk
-    , v3To4
-    , v4To3
-    , v4To3'
     ) where
 
 import Prelude hiding ((<*))
@@ -49,13 +44,11 @@ import Control.Applicative (pure)
 import Control.Arrow
 import Control.Monad
 import Control.Monad.State
-import "lens" Control.Lens
-
+import Control.Lens
 import Data.Int
-
-import Linear
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import Linear
 
 import Graphics.Geometry
 import Graphics.Texture
@@ -332,7 +325,7 @@ shadowShader _ shaderConfigUniformBuffer = do
     triangles :: PrimitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream shadowPrimitives
     let
         projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, ())
-        projectedTriangles = (\(p, _) -> (viewProjMat !* v3To4 p 1, ())) <$> triangles
+        projectedTriangles = (\(p, _) -> (viewProjMat !* point p, ())) <$> triangles
 
         getRasterOptions env = (FrontAndBack, ViewPort (V2 0 0) (imageSize (shadowImage env)), DepthRange 0 1)
 
@@ -369,7 +362,7 @@ directShader window shaderConfigUniformBuffer = do
     triangles :: PrimitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream directShaderPrimitives
     let
         projWithShadow (position, normal) =
-            let p = v3To4 position 1
+            let p = point position
             -- TODO position is not transformed
             in  (viewProjMat !* p, (normMat !* normal, shadowMat !* p, position, lightingContext))
 
@@ -414,7 +407,7 @@ deferredShader window shaderConfigUniformBuffer = do
     triangles :: PrimitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream deferredShaderPrimitives
     let
         projGeometry (position, normal) =
-            let p = v3To4 position 1
+            let p = point position
             -- TODO position is not transformed
             in  (viewProjMat !* p, (position, normal, pure 1))
 
@@ -486,8 +479,8 @@ ssaoShader _ shaderConfigUniformBuffer = do
 
             noise = noiseSample (texCoords * noiseScale)
 
-            position = cameraMat !* v3To4 (positionSample texCoords) 1
-            normal = v4To3 $ cameraMat !* v3To4 (normalSample texCoords) 0
+            position = cameraMat !* point (positionSample texCoords)
+            normal = (cameraMat !* vector (normalSample texCoords))^._xyz
 
             tangent = signorm (noise - normal ^* dot noise normal)
             bitangent = cross normal tangent
@@ -503,12 +496,12 @@ ssaoShader _ shaderConfigUniformBuffer = do
                 bias = 0.01
 
                 -- From tangent to view-space
-                samplePosition = position + v3To4 ((tbn !* sample) ^* radius) 0
+                samplePosition = position + vector ((tbn !* sample) ^* radius)
 
                 -- From view to clip-space + perspective divide + to range [0, 1]
-                texCoords' = (v4To3' (viewProjMat !* samplePosition) * 0.5 + 0.5)^._xy
+                texCoords' = (normalizePoint (viewProjMat !* samplePosition) * 0.5 + 0.5)^._xy
 
-                position' = cameraMat !* v3To4 (positionSample texCoords') 1
+                position' = cameraMat !* point (positionSample texCoords')
                 rangeCheck = smoothstep 0 1 (radius / abs (position^._z - position'^._z))
                 contribution = (ifThenElse' (position'^._z >=* samplePosition^._z + bias) 1 0) * rangeCheck
 
@@ -639,7 +632,7 @@ lightingShader window shaderConfigUniformBuffer = do
                 lighting = getSunlight
                     shadowSample
                     (normMat !* normal)
-                    (Just $ shadowMat !* v3To4 position 1)
+                    (Just $ shadowMat !* point position)
                     position
                     material
                     occlusion
@@ -666,7 +659,7 @@ gridShader window shaderConfigUniformBuffer = do
         projectedTriangles :: PrimitiveStream Triangles (V4 VFloat, (V2 VFloat, VFloat, FogS V))
         projectedTriangles =
             (\p -> (viewProjMat !* p, (p^._xy, camPos^._z, shaderConfigFogS config))) .
-            (`v3To4` 1) .
+            point .
             (* 4000) <$> triangles
 
         getRasterOptions env = (Front, gridViewport env, DepthRange 0 1)
@@ -747,7 +740,7 @@ normalShader window shaderConfigUniformBuffer = do
     lines :: PrimitiveStream Lines (V3 VFloat) <- toPrimitiveStream normalShaderPrimitives
     let
         projectedLines :: PrimitiveStream Lines (V4 VFloat, ())
-        projectedLines = (\p -> (viewProjMat !* v3To4 p 1, ())) <$> lines
+        projectedLines = (\p -> (viewProjMat !* point p, ())) <$> lines
 
         getRasterOptions env = (Front, normalShaderViewport env, DepthRange 0 1)
 
@@ -792,7 +785,7 @@ getSunlight shadowSample normal shadowCoord renderContextSpacePosition material 
         shadow = maybe 1 (getShadow shadowSample normal (-sunLightDirection)) shadowCoord
         sunContribution = (baseColor * ambient) + (baseColor * diffuse + specular) ^* shadow
 
-        color = v3To4 (sunContribution ^* occlusion) 1
+        color = point (sunContribution ^* occlusion)
 
         -- Add fog.
         {-
@@ -826,7 +819,7 @@ getLight shadowSample normal renderContextSpacePosition material occlusion light
 
         lightContribution = (baseColor * diffuse + specular) ^/ attenuation
 
-        color = v3To4 (lightContribution ^* occlusion) 1
+        color = point (lightContribution ^* occlusion)
 
     in  color
 
@@ -899,12 +892,3 @@ poissonDisk =
    , V2 0.19984126 0.78641367
    , V2 0.14383161 (-0.14100790)
    ]
-
-v3To4 :: Floating a => V3 a -> a -> V4 a
-v3To4 (V3 x y z) = V4 x y z
-
-v4To3 :: Floating a => V4 a -> V3 a
-v4To3 (V4 x y z w) = V3 x y z
-
-v4To3' :: Floating a => V4 a -> V3 a
-v4To3' (V4 x y z w) = V3 (x/w) (y/w) (z/w)

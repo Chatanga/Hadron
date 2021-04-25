@@ -10,7 +10,7 @@ to handle missing features such as geometry shaders and transform feedbacks.
 
 **Controls:**
 
-* left mouse drag: look around
+* Left mouse drag: look around
 * W: forward
 * A: left
 * S: backward

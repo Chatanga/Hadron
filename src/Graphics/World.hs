@@ -1,5 +1,3 @@
-{-# LANGUAGE PackageImports #-}
-
 module Graphics.World
     ( FireBall(..)
     , World(..)

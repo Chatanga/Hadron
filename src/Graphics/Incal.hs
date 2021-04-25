@@ -1,6 +1,4 @@
-{-# LANGUAGE FlexibleInstances, UndecidableInstances #-}
-{-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.Incal
     ( createIncalRenderer
@@ -9,14 +7,6 @@ module Graphics.Incal
 import Prelude hiding ((<*))
 
 import Control.Applicative (pure)
-import Control.Arrow
-import Control.Monad
-import Control.Monad.State
-import "lens" Control.Lens
-
-import Data.Int
-
-import Linear
 import Graphics.Color
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
@@ -24,7 +14,6 @@ import qualified Graphics.GPipe.Context.GLFW as GLFW
 import Graphics.Geometry
 import Graphics.Texture
 import Graphics.Shaders
-import Common.Random
 
 createIncalRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
 createIncalRenderer window = do

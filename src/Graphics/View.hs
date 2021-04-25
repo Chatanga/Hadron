@@ -1,5 +1,3 @@
-{-# LANGUAGE PackageImports #-}
-
 module Graphics.View
     ( Event(..)
     , EventAction(..)
@@ -18,15 +16,11 @@ module Graphics.View
     ) where
 
 import Control.Monad
-
 import Data.List
 import Data.Maybe
 import Data.Tree
 import Data.Tree.Zipper
-
 import qualified Graphics.GPipe.Context.GLFW as GLFW
-
-import Common.Debug
 
 ------------------------------------------------------------------------------------------------------------------------
 

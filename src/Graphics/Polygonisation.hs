@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies, FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.Polygonisation
     ( createPolygonisationRenderer
@@ -9,25 +9,23 @@ import Prelude hiding ((.), id, (<*))
 import Control.Applicative (liftA2)
 import Control.Category (Category((.)), id)
 import Control.Lens ((&), (<&>), (^.))
-import Control.Monad
+import Control.Monad ( forM_, replicateM, forM )
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception (MonadException)
-import Data.Bifunctor
 import Data.Int (Int8, Int32)
 import Data.List ((\\), partition)
-import Data.Maybe
 import Data.Word (Word8, Word16, Word32)
-
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 
 import Common.Debug
+
+import Graphics.Color
+import Graphics.Geometry
+import Graphics.Intersection
 import Graphics.MarchingCube
 import Graphics.Shaders
-import Graphics.Geometry
 import Graphics.Texture
-import Graphics.Color
-import System.IO
 
 ----------------------------------------------------------------------------------------------------------------------
 
@@ -39,7 +37,6 @@ What I’m missing:
 - Indexed (fixed size) array.
 - Bitwise operations to pack/unpack data efficiently.
 -}
-
 
 ----------------------------------------------------------------------------------------------------------------------
 
@@ -621,44 +618,38 @@ selectBlocks bounds camera = allBlocks where
     cameraPos = cameraPosition camera
     cameraMat = lookAt cameraPos (cameraPos + getSight camera) (getUp camera)
 
-    pieceWise f = foldl1 (\(V3 x1 y1 z1) (V3 x2 y2 z2) -> V3 (f x1 x2) (f y1 y2) (f z1 z2))
-
     projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
     modelViewProj = projectionMat !*! cameraMat
     invModelViewProj = inv44 modelViewProj
 
-    frustum :: [V3 Float]
-    frustum = map (v4To3' . (invModelViewProj !*) . point) ndcFrustum
+    -- Frustum corners in normalized device coordinates.
+    ndcFrustumCorners =
+        [ V3 (-1) (-1) (-1)
+        , V3 1 (-1) (-1)
+        , V3 (-1) 1 (-1)
+        , V3 1 1 (-1)
+        , V3 (-1) (-1) 1
+        , V3 1 (-1) 1
+        , V3 (-1) 1 1
+        , V3 1 1 1
+        ]
 
-    -- TODO Not enough!
-    cubeIntersectFrustum :: Int -> V3 Float -> Bool
-    cubeIntersectFrustum s b =
-        let box = map (\v -> b + v * fromIntegral s) cube -- An axis aligned cube to be precise.
-        in  any insideFrustum box || any (insideBox box) frustum
+    -- Same things in world coordinates.
+    frustumCorners = map (normalizePoint . (invModelViewProj !*) . point) ndcFrustumCorners
+    frustumIntersector = sphereWithFrustumIntersect frustumCorners
 
-    insideFrustum :: V3 Float -> Bool
-    insideFrustum =
-        (\(V3 x y z) -> x && y && z) .
-        fmap (\c -> (-1) <= c && c <= 1) .
-        v4To3' .
-        (modelViewProj !*) .
-        point
-
-    insideBox :: [V3 Float] -> V3 Float -> Bool
-    insideBox box (V3 x y z) =
-        let V3 xMin yMin zMin = pieceWise min box
-            V3 xMax yMax zMax = pieceWise max box
-        in  xMin <= x && x <= xMax &&
-            yMin <= y && y <= yMax &&
-            zMin <= z && z <= zMax
+    distanceToSight p = -(cameraMat !* point p)^._z
 
     size = blockSize * 4
 
     blocks :: [V3 Float]
     blocks =
-        -- The AABB whose coordinates are multiple of 'size' containing the frustum.
-        let V3 xMin yMin zMin :: V3 Int = fmap (\n -> floor (n / fromIntegral size) * size) (pieceWise min frustum)
-            V3 xMax yMax zMax :: V3 Int = fmap (\n -> ceiling (n / fromIntegral size) * size) (pieceWise max frustum)
+        let pieceWise f = foldl1 (\(V3 x1 y1 z1) (V3 x2 y2 z2) -> V3 (f x1 x2) (f y1 y2) (f z1 z2))
+            -- The AABB whose coordinates are multiple of 'size' containing the frustum.
+            V3 xMin yMin zMin :: V3 Int = fmap (\n -> floor (n / fromIntegral size) * size) (pieceWise min frustumCorners)
+            V3 xMax yMax zMax :: V3 Int = fmap (\n -> ceiling (n / fromIntegral size) * size) (pieceWise max frustumCorners)
+            r = pure (fromIntegral size / 2)
+            cubeIntersectFrustum size p = frustumIntersector (p + r) (norm r) /= Outside
         -- Divide it into blocks and filter out those outside the frustum.
         in  filter (cubeIntersectFrustum size)
                 [ fromIntegral <$> V3 x y z
@@ -671,11 +662,12 @@ selectBlocks bounds camera = allBlocks where
 
     divide 0 s _ bs = withSize s bs
     divide depth s f bs =
-        let
-            s' = s `div` 2
+        let s' = s `div` 2
             f' = f / 2
             center b = b + pure (fromIntegral s')
-            (farestBlocks, nearestBlocks) = partition (\b -> distance (center b) cameraPos > f') bs
+            r = pure (fromIntegral size / 2)
+            cubeIntersectFrustum size p = frustumIntersector (p + r) (norm r) /= Outside
+            (farestBlocks, nearestBlocks) = partition (\b -> distanceToSight (center b) > f') bs
             subdivide b = [ b + (fromIntegral <$> (s' *^ V3 x y z)) | x <-[0..1], y <-[0..1], z <-[0..1] ]
             subBlocks = filter (cubeIntersectFrustum s') (concatMap subdivide nearestBlocks)
         in  withSize s farestBlocks ++ divide (depth - 1) s' f' subBlocks

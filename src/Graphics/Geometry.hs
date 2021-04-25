@@ -1,5 +1,3 @@
-{-# LANGUAGE PackageImports #-}
-
 module Graphics.Geometry
     ( BoundingInfo(..)
     , Camera(..)
@@ -16,19 +14,10 @@ module Graphics.Geometry
     , scaling
     , translating
     , rotating
-    --
-    , showV1
-    , showV2
-    , showV3
-    , showV4
     ) where
 
-import "lens" Control.Lens
-
-import Data.List
-
+import Control.Lens ( (^.) )
 import Linear
-import Numeric
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -126,12 +115,5 @@ translating (V3 dx dy dz) = V4
 rotating :: (Epsilon a, Floating a) => V3 a -> a -> M44 a
 rotating axis angle = mkTransformation (axisAngle axis angle) noTranslation
 
-showV1 :: Real a => a -> String
-showV1 x = showGFloat (Just 2) (realToFrac x) ""
-
-showVn :: Real a => [a] -> String
-showVn v = "(" ++ intercalate ", " (map showV1 v) ++ ")"
-
-showV2 (V2 x y) = showVn [x, y]
-showV3 (V3 x y z) = showVn [x, y, z]
-showV4 (V4 x y z w) = showVn [x, y, z, w]
+v4To3 :: V4 a -> V3 a
+v4To3 (V4 x y z w) = V3 x y z

@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, PackageImports, TypeFamilies, FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.CubeRoom
     ( createCubeRoomRenderer
@@ -8,13 +8,11 @@ where
 import Prelude hiding ((.), id, (<*))
 import Control.Category (Category((.)), id)
 import Control.Lens ((&), (<&>), (^.))
-import Control.Monad
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception (MonadException)
-import Data.Bifunctor
+import Data.Bifunctor ( Bifunctor(first) )
 import Data.Int (Int8, Int32)
 import Data.Word (Word8, Word16, Word32)
-
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 
@@ -24,7 +22,6 @@ import Graphics.Geometry
 import Graphics.MarchingCube
 import Graphics.Shaders
 import Graphics.World
-import System.IO
 
 ----------------------------------------------------------------------------------------------------------------------
 
@@ -225,7 +222,7 @@ createCubeRoomRenderer window = do
     cornersRenderer <- createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstanceBuffer
     blocksRenderer <- createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer
 
-    writeBuffer fogBuffer 0 [Fog (v3To4 skyBlue 1) 10 100 0.2]
+    writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.2]
 
     let renderIt _ bounds camera _ sun lights buffers normalBuffers = do
 
@@ -235,7 +232,7 @@ createCubeRoomRenderer window = do
             writeBuffer projectionBuffer 0 [createProjection bounds camera]
 
             render $ do
-                clearWindowColor window (v3To4 skyBlue 1)
+                clearWindowColor window (point skyBlue)
                 clearWindowDepth window 1
                 let viewPort = ViewPort (V2 x y) (V2 w h)
                 cubesRenderer viewPort

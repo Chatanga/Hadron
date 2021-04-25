@@ -17,7 +17,6 @@ import Data.List ((\\), elemIndex, groupBy, intersect, nub, partition, sort, sor
 import Data.Maybe (fromJust, maybe)
 import Data.Ord ( comparing )
 import Data.Tuple (swap)
-
 import Graphics.GPipe
 
 import Common.Debug

@@ -1,4 +1,4 @@
-{-# LANGUAGE PackageImports, FlexibleContexts  #-}
+{-# LANGUAGE FlexibleContexts  #-}
 
 module Graphics.Application
     ( runApplication
@@ -6,19 +6,15 @@ module Graphics.Application
 
 import Control.Monad
 import Control.Monad.State
-
 import Data.IORef
 import Data.Maybe
 import Data.Tree
 import Data.Tree.Zipper
-
-import Numeric
-
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import Numeric
 import System.Log.Logger
 
-import Graphics.Layouts
 import Graphics.Scene
 import Graphics.View
 import Graphics.World
@@ -103,7 +99,7 @@ renderViewTree screenSize viewTree = do
 ------------------------------------------------------------------------------------------------------------------------
 
 runApplication :: String -> IO ()
-runApplication name = runContextT (GLFW.defaultHandleConfigWithVersion (4, 5)) $ do
+runApplication name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVersion = GLFW.OpenGlVersion 4 5 } ) $ do
     let (w , h) = (800, 600)
 
     window <- newWindow

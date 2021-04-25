@@ -141,7 +141,6 @@ module Graphics.Color
     ) where
 
 import Prelude hiding (tan)
-
 import Linear
 
 maroon :: Floating a => V3 a

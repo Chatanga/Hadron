@@ -6,7 +6,7 @@ module Graphics.Heightmap
     , getInterpolatedHeightmapValue
     ) where
 
-import Data.Tuple
+import Data.Tuple ( swap )
 import qualified Data.Vector.Storable as V
 
 type Heightmap a = (Int, Int, V.Vector a)
