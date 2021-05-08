@@ -6,8 +6,8 @@ maintainer:     florent@hihan.org
 dependencies:
 - base
 - array
-- GPipe == 2.2.5.1
-- GPipe-GLFW == 1.5.0.0
+- GPipe == 2.3.1
+- GPipe-GLFW == 1.4.2.0
 - lens
 - JuicyPixels
 - linear

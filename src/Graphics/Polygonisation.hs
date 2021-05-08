@@ -195,7 +195,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                     protoTriangles :: GGenerativeGeometry Points VWord
                     (_, protoTriangles) = while
                         (\(i, _) -> i <* count)
-                        (\(i, gg) -> (i+1, emitProtoTriangle (i-1) gg)) -- TODO Generated code seems to have a bug: i is modified with side effect.
+                        (\(i, gg) -> (i+1, emitProtoTriangle i gg))
                         (0, generativePoints)
 
                     emitProtoTriangle :: VInt -> GGenerativeGeometry Points VWord -> GGenerativeGeometry Points VWord
@@ -649,9 +649,9 @@ selectBlocks bounds camera = allBlocks where
             V3 xMin yMin zMin :: V3 Int = fmap (\n -> floor (n / fromIntegral size) * size) (pieceWise min frustumCorners)
             V3 xMax yMax zMax :: V3 Int = fmap (\n -> ceiling (n / fromIntegral size) * size) (pieceWise max frustumCorners)
             r = pure (fromIntegral size / 2)
-            cubeIntersectFrustum size p = frustumIntersector (p + r) (norm r) /= Outside
+            cubeIntersectFrustum p = frustumIntersector (p + r) (norm r) /= Outside
         -- Divide it into blocks and filter out those outside the frustum.
-        in  filter (cubeIntersectFrustum size)
+        in  filter cubeIntersectFrustum
                 [ fromIntegral <$> V3 x y z
                         | x <- [xMin, xMin+size .. xMax]
                         , y <- [yMin, yMin+size .. yMax]
@@ -665,11 +665,11 @@ selectBlocks bounds camera = allBlocks where
         let s' = s `div` 2
             f' = f / 2
             center b = b + pure (fromIntegral s')
-            r = pure (fromIntegral size / 2)
-            cubeIntersectFrustum size p = frustumIntersector (p + r) (norm r) /= Outside
+            r = pure (fromIntegral s' / 2)
+            cubeIntersectFrustum p = frustumIntersector (p + r) (norm r) /= Outside
             (farestBlocks, nearestBlocks) = partition (\b -> distanceToSight (center b) > f') bs
             subdivide b = [ b + (fromIntegral <$> (s' *^ V3 x y z)) | x <-[0..1], y <-[0..1], z <-[0..1] ]
-            subBlocks = filter (cubeIntersectFrustum s') (concatMap subdivide nearestBlocks)
+            subBlocks = filter cubeIntersectFrustum (concatMap subdivide nearestBlocks)
         in  withSize s farestBlocks ++ divide (depth - 1) s' f' subBlocks
 
     allBlocks :: [(Float, V3 Float)]
