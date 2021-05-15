@@ -525,7 +525,7 @@ generateSampleKernel size = forM [0 .. size-1] $ \i -> do
 generateSampleKernelTexture :: Int -> ContextT GLFW.Handle os IO (Texture1D os (Format RGBFloat))
 generateSampleKernelTexture size = do
     sampleKernel <- liftIO (generateSampleKernel size)
-    texture <- newTexture1D RGB16F size maxBound
+    texture <- newTexture1D' "kernel" RGB16F size maxBound
     writeTexture1D texture 0 0 size sampleKernel
     return texture
 

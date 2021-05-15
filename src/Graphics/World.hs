@@ -40,14 +40,14 @@ type DurationInMs = Double
 createWorld :: Window os f Depth -> ContextT GLFW.Handle os IO (World os)
 createWorld window = do
 
-    wallBuffer <- newBuffer (length walls)
+    wallBuffer <- newBuffer' "wall" (length walls)
     writeBuffer wallBuffer 0 walls
 
     let sphere' = map (\(V3 x y z, n) -> (V3 x y (z + 6), n)) (sphere 4)
-    sphereBuffer <- newBuffer (length sphere')
+    sphereBuffer <- newBuffer' "sphere" (length sphere')
     writeBuffer sphereBuffer 0 sphere'
 
-    incalBuffer <- newBuffer (length incal)
+    incalBuffer <- newBuffer' "incal" (length incal)
     writeBuffer incalBuffer 0 incal
 
     {-
@@ -56,15 +56,17 @@ createWorld window = do
     writeBuffer cylinderBuffer 0 cylinder
     -}
 
+    {-
     let
         createNormalBuffer :: [(V3 Float, V3 Float)] -> ContextT GLFW.Handle os IO (Buffer os (B3 Float))
         createNormalBuffer mesh = do
             let normals = concatMap (\(p, n) -> [p, p + n]) mesh
-            normalBuffer <- newBuffer (length normals)
+            normalBuffer <- newBuffer' "normals" (length normals)
             writeBuffer normalBuffer 0 normals
             return normalBuffer
 
     incalNormalBuffer <- createNormalBuffer incal
+    -}
 
     return $ World
         []

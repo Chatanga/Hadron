@@ -17,6 +17,7 @@ import Data.List ((\\), partition)
 import Data.Word (Word8, Word16, Word32)
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import System.Log.Logger
 
 import Common.Debug
 
@@ -210,7 +211,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
             gs' :: GeometryStream (GGenerativeGeometry Points VWord) = makeProtoTriangles <$> gs
 
         let maxVertices = maxCellTriangleCount
-        drawNothing window (const protoBlockBuffer) maxVertices gs'
+        drawNothing window (const protoBlockBuffer) Queried maxVertices gs'
 
     cubeEdgeTexture :: Texture2D os (Format RInt) <- newTexture2D R8I (V2 2 (length cubeEdges)) 1
     writeTexture2D cubeEdgeTexture 0 0 (V2 2 (length cubeEdges)) (fromIntegral <$> concatMap (\(i, j) -> [i, j]) cubeEdges :: [Int32])
@@ -228,7 +229,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
         cubeEdgeSampler <- newSampler2D (const (cubeEdgeTexture, SamplerNearest, (pure ClampToEdge, undefined)))
         cubeVerticeSampler <- newSampler1D (const (cubeVerticeSampler, SamplerNearest, (ClampToEdge, undefined)))
 
-        ps :: primitiveStream Points VWord <- toPrimitiveStream' (Just (fst . snd)) (snd . snd)
+        ps :: primitiveStream Points VWord <- toFeedbackPrimitiveStream (fst . snd) (snd . snd)
 
         let toTriangles :: VWord -> V3 (V3 VFloat, V3 VFloat)
             toTriangles z5_y5_x5_edge5_edge5_edge5 = triangles
@@ -286,11 +287,12 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
             gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = gs <&> makeTriangles
 
         let maxVertices = 3
-        drawNothing window fst maxVertices gs'
+        drawNothing window fst Queried maxVertices gs'
 
     return $ \blockBuffer -> do
         positions <- toPrimitiveArray PointList <$> newVertexArray cellPositionBuffer
         listVerticesShader positions
+        -- TODO Should be nice to be able to abort here on an empty list.
         protoBlocks <- toPrimitiveArray PointList <$> newVertexArray protoBlockBuffer
         genVerticesShader (blockBuffer, (protoBlockBuffer, protoBlocks))
 
@@ -306,7 +308,7 @@ createBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
         (projectionMat, cameraMat, cameraPos) <- getUniform (const (projectionBuffer, 0))
         let modelViewProj = projectionMat !*! cameraMat
 
-        ps :: primitiveStream Triangles (V3 VFloat, V3 VFloat) <- toPrimitiveStream' (Just (fst . snd)) (snd . snd)
+        ps :: primitiveStream Triangles (V3 VFloat, V3 VFloat) <- toFeedbackPrimitiveStream (fst . snd) (snd . snd)
         let ps' :: primitiveStream Triangles (VPos, (V3 VFloat, V3 VFloat, V3 VFloat)) = ps <&> \(p, n) -> (modelViewProj !* point p, (p, n, cameraPos))
 
         fog :: FogS F <- getUniform (const (fogBuffer, 0))
@@ -548,12 +550,13 @@ generateBlocks window = do
     noiseTextures :: [Texture3D os (Format RFloat)] <- take 6 . cycle <$> replicateM 3 (generate3DNoiseTexture (16, 16, 16))
 
     fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture noiseTextures
-    generateCell <- createGenerateBlockRenderer window offsetBuffer densityTexture
+    generateBlock <- createGenerateBlockRenderer window offsetBuffer densityTexture
 
     let generateCellFromOffset offset blockBuffer = do
             writeBuffer offsetBuffer 0 [offset]
-            render fillDensityTexture
-            render (generateCell blockBuffer)
+            render $ fillDensityTexture >> generateBlock blockBuffer
+            size <- liftIO $ feedbackBufSize (undefined :: Triangles) blockBuffer
+            liftIO $ infoM "Hadron" $ "Block size: " ++ show size
 
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
 
