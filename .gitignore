@@ -1,4 +1,5 @@
-debug.log
-Hadron.cabal
-.stack-work
-.vscode
+/.stack-work/
+/.stack.yaml.lock
+/Hadron.cabal
+/.vscode/
+/debug.log
