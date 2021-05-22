@@ -10,6 +10,7 @@ module Graphics.World
 import Linear
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import Control.Monad.IO.Class
 
 import Graphics.Geometry
 import Graphics.Shaders
@@ -37,7 +38,7 @@ data World os = World
 
 type DurationInMs = Double
 
-createWorld :: Window os f Depth -> ContextT GLFW.Handle os IO (World os)
+createWorld :: MonadIO m => Window os f Depth -> ContextT GLFW.Handle os m (World os)
 createWorld window = do
 
     wallBuffer <- newBuffer' "wall" (length walls)
@@ -79,7 +80,7 @@ createWorld window = do
         [incalBuffer, wallBuffer, sphereBuffer]
         []
 
-animateWorld :: DurationInMs -> World os -> ContextT GLFW.Handle os IO (World os)
+animateWorld :: MonadIO m => DurationInMs -> World os -> ContextT GLFW.Handle os m (World os)
 animateWorld timeDelta world = return world' where
 
     sun = worldSun world

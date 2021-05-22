@@ -1,4 +1,4 @@
-{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
+{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts, RankNTypes #-}
 
 module Graphics.Shaders
     ( DirectionLight (..), DirectionLightB (..), DirectionLightS (..)
@@ -43,7 +43,9 @@ import Prelude hiding ((<*))
 import Control.Applicative (pure)
 import Control.Arrow
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.State
+import Control.Monad.Exception
 import Control.Lens
 import Data.Int
 import Graphics.GPipe
@@ -286,10 +288,10 @@ data FrameBufferGroup os = FrameBufferGroup
     -}
     }
 
-data RenderContext os = RenderContext
+data RenderContext m os = RenderContext
     { renderContextFrameBufferGroup :: Maybe (Size2, FrameBufferGroup os)
-    , renderContextRenderAction
-        :: RenderContext os
+    , renderContextRenderAction :: (MonadIO m, MonadAsyncException m)
+        => RenderContext m os
         -> ((Int, Int), (Int, Int))
         -> Camera
         -> [Camera]
@@ -297,10 +299,10 @@ data RenderContext os = RenderContext
         -> [PointLight]
         -> [Buffer os (B3 Float, B3 Float)]
         -> [Buffer os (B3 Float)]
-        -> ContextT GLFW.Handle os IO (RenderContext os)
+        -> ContextT GLFW.Handle os m (RenderContext m os)
     }
 
-createFrameBufferGroup :: Size2 -> ContextT GLFW.Handle os IO (Size2, FrameBufferGroup os)
+createFrameBufferGroup :: (MonadIO m, MonadAsyncException m) => Size2 -> ContextT GLFW.Handle os m (Size2, FrameBufferGroup os)
 createFrameBufferGroup size = do
     frameBufferGroup <- FrameBufferGroup
         <$> newTexture2D Depth16 (V2 2048 2048) 1
@@ -522,7 +524,7 @@ generateSampleKernel size = forM [0 .. size-1] $ \i -> do
         sample = lerp (s * s) 0.1 1 * normalize (V3 (x * 2 - 1) (y * 2 - 1) z)
     return sample
 
-generateSampleKernelTexture :: Int -> ContextT GLFW.Handle os IO (Texture1D os (Format RGBFloat))
+generateSampleKernelTexture :: MonadIO m => Int -> ContextT GLFW.Handle os m (Texture1D os (Format RGBFloat))
 generateSampleKernelTexture size = do
     sampleKernel <- liftIO (generateSampleKernel size)
     texture <- newTexture1D' "kernel" RGB16F size maxBound

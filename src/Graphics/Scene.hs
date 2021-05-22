@@ -1,3 +1,5 @@
+{-# language RankNTypes #-}
+
 module Graphics.Scene
     ( Scene(..)
     , SceneName(..)
@@ -7,6 +9,7 @@ module Graphics.Scene
     ) where
 
 import Control.Monad.State
+import Control.Monad.Exception
 
 import Data.Fixed
 import Data.IORef
@@ -28,12 +31,12 @@ import Graphics.World
 
 ------------------------------------------------------------------------------------------------------------------------
 
-data SceneContext os = SceneContext
+data SceneContext m os = SceneContext
     { sceneContextCameraName :: String
     , sceneContextCameraMoves :: !(Map.Map Move Double)
     , sceneContextCursorPosition :: (Float, Float)
     , sceneContextDrag :: Maybe (Float, Float)
-    , sceneContextRenderContext :: RenderContext os
+    , sceneContextRenderContext :: RenderContext m os
     }
 
 data Move
@@ -45,13 +48,13 @@ data Move
     | GoBack
     deriving (Eq, Ord, Show)
 
-data Scene os = Scene
-    { sceneDisplay :: ((Int, Int), (Int, Int)) -> ContextT GLFW.Handle os IO ()
-    , sceneAnimate :: (Float, Float) -> Double -> ContextT GLFW.Handle os IO (Scene os)
-    , sceneManipulate :: (Float, Float) -> Event -> ContextT GLFW.Handle os IO (Maybe (Scene os)) -- ^ nothing => exit
+data Scene m os = Scene
+    { sceneDisplay :: MonadIO m => ((Int, Int), (Int, Int)) -> ContextT GLFW.Handle os m ()
+    , sceneAnimate :: MonadIO m => (Float, Float) -> Double -> ContextT GLFW.Handle os m (Scene m os)
+    , sceneManipulate :: MonadIO m => (Float, Float) -> Event -> ContextT GLFW.Handle os m (Maybe (Scene m os)) -- ^ nothing => exit
     }
 
-createScene :: Window os f Depth -> IORef (World os) -> IORef (SceneContext os) -> Scene os
+createScene :: (MonadIO m, MonadAsyncException m) => Window os f Depth -> IORef (World os) -> IORef (SceneContext m os) -> Scene m os
 createScene window worldRef contextRef = Scene
     (display window worldRef contextRef)
     (animate window worldRef contextRef)
@@ -59,7 +62,7 @@ createScene window worldRef contextRef = Scene
 
 data SceneName = Incal | Polygonisation | CubeRoom
 
-createSceneContext :: Window os RGBAFloat Depth -> SceneName -> String -> ContextT GLFW.Handle os IO (SceneContext os)
+createSceneContext :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> SceneName -> String -> ContextT GLFW.Handle os m (SceneContext m os)
 createSceneContext window sceneName cameraName = do
     renderer <- case sceneName of
         Incal -> createIncalRenderer window
@@ -74,11 +77,12 @@ createSceneContext window sceneName cameraName = do
 
 ------------------------------------------------------------------------------------------------------------------------
 
-display :: Window os f Depth
+display :: (MonadIO m, MonadAsyncException m)
+    => Window os f Depth
     -> IORef (World os)
-    -> IORef (SceneContext os)
+    -> IORef (SceneContext m os)
     -> ((Int, Int), (Int, Int))
-    -> ContextT GLFW.Handle os IO ()
+    -> ContextT GLFW.Handle os m ()
 display window worldRef contextRef bounds = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
@@ -97,12 +101,13 @@ display window worldRef contextRef bounds = do
 
 ------------------------------------------------------------------------------------------------------------------------
 
-animate :: Window os f Depth
+animate :: (MonadIO m, MonadAsyncException m)
+    => Window os f Depth
     -> IORef (World os)
-    -> IORef (SceneContext os)
+    -> IORef (SceneContext m os)
     -> (Float, Float)
     -> Double
-    -> ContextT GLFW.Handle os IO (Scene os)
+    -> ContextT GLFW.Handle os m (Scene m os)
 animate window worldRef contextRef (_, height) timeDelta = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
@@ -145,12 +150,13 @@ animate window worldRef contextRef (_, height) timeDelta = do
 
 ------------------------------------------------------------------------------------------------------------------------
 
-manipulate :: Window os f Depth
+manipulate :: (MonadIO m, MonadAsyncException m)
+    => Window os f Depth
     -> IORef (World os)
-    -> IORef (SceneContext os)
+    -> IORef (SceneContext m os)
     -> (Float, Float)
     -> Event
-    -> ContextT GLFW.Handle os IO (Maybe (Scene os))
+    -> ContextT GLFW.Handle os m (Maybe (Scene m os))
 
 -- Handle keyboard events.
 manipulate window worldRef contextRef _ (EventKey k _ ks _)

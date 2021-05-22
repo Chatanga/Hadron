@@ -9,7 +9,7 @@ import Prelude hiding ((.), id, (<*))
 import Control.Category (Category((.)), id)
 import Control.Lens ((&), (<&>), (^.))
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Exception (MonadException)
+import Control.Monad.Exception
 import Data.Bifunctor ( Bifunctor(first) )
 import Data.Int (Int8, Int32)
 import Data.Word (Word8, Word16, Word32)
@@ -189,7 +189,7 @@ createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstance
             <*> newVertexArray cornerInstanceBuffer
         shader (viewPort, corner)
 
-createCubeRoomRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
+createCubeRoomRenderer :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m (RenderContext m os)
 createCubeRoomRenderer window = do
 
     fogBuffer :: Buffer os (Uniform FogB) <- newBuffer 1

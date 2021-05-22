@@ -8,6 +8,8 @@ dependencies:
 - array
 - GPipe == 2.3.1
 - GPipe-GLFW == 1.4.2.0
+#- dear-imgui
+#- managed
 - lens
 - JuicyPixels
 - linear

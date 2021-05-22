@@ -1,4 +1,9 @@
 {-# LANGUAGE FlexibleContexts  #-}
+{-# language BlockArguments #-}
+{-# language LambdaCase #-}
+{-# language OverloadedStrings #-}
+{-# language RankNTypes #-}
+{-# language InstanceSigs #-}
 
 module Graphics.Application
     ( runApplication
@@ -15,31 +20,42 @@ import qualified Graphics.GPipe.Context.GLFW as GLFW
 import Numeric
 import System.Log.Logger
 
+import Control.Monad.IO.Class
+import Control.Monad.Exception
+
+{-
+import Control.Monad.Managed
+import qualified DearImGui as ImGui
+import qualified DearImGui.OpenGL3 as ImGui
+-}
+
+import Common.Debug
 import Graphics.Scene
 import Graphics.View
 import Graphics.World
 
 ------------------------------------------------------------------------------------------------------------------------
 
-createViewWithParams :: Bool
-    -> Layout (ContextT GLFW.Handle os IO) (Maybe (Scene os))
-    -> ViewHandleEvent (ContextT GLFW.Handle os IO) (Maybe (Scene os))
-    -> Maybe (Scene os)
-    -> View (ContextT GLFW.Handle os IO) (Maybe (Scene os))
+createViewWithParams :: (MonadIO m, MonadAsyncException m)
+    => Bool
+    -> Layout (ContextT GLFW.Handle os m) (Maybe (Scene m os))
+    -> ViewHandleEvent (ContextT GLFW.Handle os m) (Maybe (Scene m os))
+    -> Maybe (Scene m os)
+    -> View (ContextT GLFW.Handle os m) (Maybe (Scene m os))
 createViewWithParams hasFocus layout handleEvent content = (createView' content)
     { viewHandleEvent = handleEvent
     , viewLayout = layout
     , viewHasFocus = hasFocus
     }
     where
-        createView' :: Maybe (Scene os) -> View (ContextT GLFW.Handle os IO) (Maybe (Scene os))
+        createView' :: (MonadIO m, MonadAsyncException m) => Maybe (Scene m os) -> View (ContextT GLFW.Handle os m) (Maybe (Scene m os))
         createView' = createView
 
 {- Handle an event through simple delegation to its inner content scene, if any.
 A scene being not aware of the view holding it, any change will stay local
 (excepted for a Nothing interpreted as a closure).
 -}
-sceneHandleEvent :: ViewHandleEvent (ContextT GLFW.Handle os IO) (Maybe (Scene os))
+sceneHandleEvent :: (MonadIO m, MonadAsyncException m) => ViewHandleEvent (ContextT GLFW.Handle os m) (Maybe (Scene m os))
 sceneHandleEvent event treeLoc =
     let view = getLabel treeLoc
         (_, (w, h)) = viewLocalBounds view
@@ -55,12 +71,13 @@ sceneHandleEvent event treeLoc =
 
 ------------------------------------------------------------------------------------------------------------------------
 
-type ScenicUI os = UI (ContextT GLFW.Handle os IO) (Maybe (Scene os))
+type ScenicUI m os = UI (ContextT GLFW.Handle os m) (Maybe (Scene m os))
 
-createScenicUI :: Window os f Depth
+createScenicUI :: (MonadIO m, MonadAsyncException m)
+    => Window os f Depth
     -> IORef (World os)
-    -> IORef (SceneContext os)
-    -> ScenicUI os
+    -> IORef (SceneContext m os)
+    -> ScenicUI m os
 createScenicUI window currentWorld currentContext = createUI ui where
     masterScene = createScene window currentWorld currentContext
     handleEvent = sceneHandleEvent
@@ -70,7 +87,9 @@ createScenicUI window currentWorld currentContext = createUI ui where
 thing as animating the world displayed by the scene. Worlds are animated
 separately.
 -}
-animateUI :: Double -> ScenicUI os -> ContextT GLFW.Handle os IO (ScenicUI os)
+animateUI :: (MonadIO m, MonadAsyncException m)
+    => Double
+    -> ScenicUI m os -> ContextT GLFW.Handle os m (ScenicUI m os)
 animateUI frameDuration ui = do
     root' <- forM (uiRoot ui) $ \view -> do
         let (_, (w, h)) = viewLocalBounds view
@@ -83,9 +102,10 @@ animateUI frameDuration ui = do
 
 {- Recursively display the tree of scenes.
 -}
-renderViewTree :: (Int, Int)
-    -> Tree (View (ContextT GLFW.Handle os IO) (Maybe (Scene os)))
-    -> ContextT GLFW.Handle os IO ()
+renderViewTree :: (MonadIO m, MonadAsyncException m)
+    => (Int, Int)
+    -> Tree (View (ContextT GLFW.Handle os m) (Maybe (Scene m os)))
+    -> ContextT GLFW.Handle os m ()
 renderViewTree screenSize viewTree = do
     let (_, screenHeigh) = screenSize
         view = rootLabel viewTree
@@ -97,6 +117,22 @@ renderViewTree screenSize viewTree = do
     mapM_ (renderViewTree screenSize) (subForest viewTree)
 
 ------------------------------------------------------------------------------------------------------------------------
+
+{-
+instance MonadException Managed where
+    throw e = error (show e)
+    catch x _ = x
+
+instance MonadAsyncException Managed where
+    mask x = x id
+
+runApplication :: String -> IO ()
+runApplication name = runManaged $ do
+    runApplication' name
+
+runApplication' :: String -> Managed ()
+runApplication' name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVersion = GLFW.OpenGlVersion 4 5 } ) $ do
+-}
 
 runApplication :: String -> IO ()
 runApplication name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVersion = GLFW.OpenGlVersion 4 5 } ) $ do
@@ -127,21 +163,22 @@ runApplication name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVe
         pushEvent (EventKey k n ks mk)
     GLFW.setMouseButtonCallback window $ Just $ \b bs mk ->
         pushEvent (EventMouseButton b bs mk)
-    GLFW.setCursorPosCallback window $ Just $ \x y ->
+    void $ GLFW.setCursorPosCallback window $ Just $ \x y ->
         pushEvent (EventCursorPos x y)
 
     -- Run the main loop.
-    mainLoop window (0, Nothing, Nothing) currentWorld uiRef quitRef eventQueueRef doProcessEvent
+    mainLoop window 0 (0, Nothing, Nothing) currentWorld uiRef quitRef eventQueueRef doProcessEvent
 
-mainLoop :: Window os RGBAFloat Depth
+mainLoop :: Window os f Depth
+    -> Int
     -> (Int, Maybe Double, Maybe Double)
     -> IORef (World os)
-    -> IORef (ScenicUI os)
+    -> IORef (ScenicUI IO os)
     -> IORef Bool
     -> IORef [Event]
     -> (Event -> ContextT GLFW.Handle os IO ())
     -> ContextT GLFW.Handle os IO ()
-mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doProcessEvent = do
+mainLoop window counter (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doProcessEvent = do
 
     -- Calculate the FPS.
     mt2 <- liftIO GLFW.getTime
@@ -154,7 +191,6 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
         else
             return (Nothing, (frameCount + 1, mt0, mt2))
 
-    -- Update the UI to the screen size.
     (V2 w h) <- getFrameBufferSize window
     liftIO $ modifyIORef uiRef (layout (w, h))
 
@@ -173,6 +209,7 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
     ui <- liftIO $ readIORef uiRef
     when (w > 0) $ do -- avoid an upcoming divide by zero
         renderViewTree (w, h) (uiRoot ui)
+
     swapWindowBuffers window
 
     -- Do the whole thing again?
@@ -180,4 +217,4 @@ mainLoop window (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doPr
     shouldQuit <- (||) <$> liftIO (readIORef quitRef) <*> pure shouldClose
     if shouldQuit
         then liftIO $ infoM "Hadron" "Exiting"
-        else mainLoop window timing worldRef uiRef quitRef eventQueueRef doProcessEvent
+        else mainLoop window (counter+1) timing worldRef uiRef quitRef eventQueueRef doProcessEvent

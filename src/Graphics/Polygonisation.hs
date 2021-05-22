@@ -11,7 +11,7 @@ import Control.Category (Category((.)), id)
 import Control.Lens ((&), (<&>), (^.))
 import Control.Monad ( forM_, replicateM, forM )
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Exception (MonadException)
+import Control.Monad.Exception
 import Data.Int (Int8, Int32)
 import Data.List ((\\), partition)
 import Data.Word (Word8, Word16, Word32)
@@ -537,7 +537,7 @@ createFrustumRenderer window projectionBuffer = do
             <*> newVertexArray frustumBuffer
         shader (viewPort, frustum)
 
-generateBlocks :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO [Buffer os (B3 Float, B3 Float)]
+generateBlocks :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m [Buffer os (B3 Float, B3 Float)]
 generateBlocks window = do
     let blockBufferSize = blockSize^3 * maxCellTriangleCount * 3
 
@@ -567,7 +567,7 @@ generateBlocks window = do
     return blockBuffers
 
 -- glxinfo | egrep -i 'Currently available dedicated video memory'
-createPolygonisationRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
+createPolygonisationRenderer :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m (RenderContext m os)
 createPolygonisationRenderer window = do
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- generateBlocks window
 

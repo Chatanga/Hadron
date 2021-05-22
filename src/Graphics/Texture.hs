@@ -10,6 +10,7 @@ module Graphics.Texture
 
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Exception
 import Codec.Picture as JP
 import Codec.Picture.Types
 import Data.Array
@@ -63,10 +64,10 @@ loadImage path = do
                     liftIO $ errorM "Kage" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
                     return Nothing
 
-saveDepthTexture :: (Int, Int) -> Texture2D os (Format Depth) -> String -> ContextT GLFW.Handle os IO ()
+
+saveDepthTexture :: (MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format Depth) -> String -> ContextT GLFW.Handle os m ()
 saveDepthTexture (w, h) texture path = do
     let level = 0
-        f :: [Float] -> HostFormat (BufferColor Float Float) -> ContextT GLFW.Handle os IO [Float]
         f a p = return (p : a)
     pixels :: Array (Int, Int) Float <- listArray ((0, 0), (h-1, w-1)) <$> readTexture2D texture level (V2 0 0) (V2 w h) f []
     let
@@ -75,10 +76,9 @@ saveDepthTexture (w, h) texture path = do
         image = generateImage getPixel w h
     liftIO $ savePngImage path (ImageYF image)
 
-saveTexture :: (Int, Int) -> Texture2D os (Format RGBFloat) -> String -> ContextT GLFW.Handle os IO ()
+saveTexture :: (MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format RGBFloat) -> String -> ContextT GLFW.Handle os m ()
 saveTexture (w, h) texture path = do
     let level = 0
-        f :: [V3 Float] -> HostFormat (BufferColor (V3 Float) (V3 Float)) -> ContextT GLFW.Handle os IO [V3 Float]
         f a p = return (p : a)
     pixels :: Array (Int, Int) (V3 Float) <- listArray ((0, 0), (h-1, w-1)) <$> readTexture2D texture level (V2 0 0) (V2 w h) f []
     let
@@ -87,7 +87,7 @@ saveTexture (w, h) texture path = do
         image = generateImage getPixel w h
     liftIO $ savePngImage path (ImageRGBF image)
 
-generateNoiseTexture :: (Int, Int) -> ContextT GLFW.Handle os IO (Texture2D os (Format RGBFloat))
+generateNoiseTexture :: MonadIO m => (Int, Int) -> ContextT GLFW.Handle os m (Texture2D os (Format RGBFloat))
 generateNoiseTexture (width, height) = do
     noise <- liftIO $ replicateM (width * height) $ do
         [x, y] <- replicateM 2 (runRandomIO $ getRandomR (0, 1)) :: IO [Float]
@@ -97,7 +97,7 @@ generateNoiseTexture (width, height) = do
     writeTexture2D texture 0 0 size noise
     return texture
 
-generate3DNoiseTexture :: (Int, Int, Int) -> ContextT GLFW.Handle os IO (Texture3D os (Format RFloat))
+generate3DNoiseTexture :: MonadIO m => (Int, Int, Int) -> ContextT GLFW.Handle os m (Texture3D os (Format RFloat))
 generate3DNoiseTexture (width, height, depth) = do
     noise <- liftIO $ replicateM (width * height * depth) $ do
         runRandomIO $ (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: IO Float

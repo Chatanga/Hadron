@@ -10,12 +10,14 @@ import Control.Applicative (pure)
 import Graphics.Color
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import Control.Monad.IO.Class
+import Control.Monad.Exception
 
 import Graphics.Geometry
 import Graphics.Texture
 import Graphics.Shaders
 
-createIncalRenderer :: Window os RGBAFloat Depth -> ContextT GLFW.Handle os IO (RenderContext os)
+createIncalRenderer :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m (RenderContext m os)
 createIncalRenderer window = do
 
     shaderConfigUniformBuffer :: Buffer os (Uniform ShaderConfigB) <- newBuffer 1
