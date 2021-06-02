@@ -18,7 +18,7 @@ main = do
                 setFormatter lh (simpleLogFormatter "[$time : $loggername : $prio] $msg")
             updateGlobalLogger "Hadron" (addHandler h)
         else
-            updateGlobalLogger "Hadron" (setLevel INFO)
+            updateGlobalLogger "Hadron" (setLevel DEBUG)
 
     let line = replicate 80 '─'
     infoM "Hadron" line

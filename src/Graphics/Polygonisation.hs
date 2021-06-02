@@ -8,12 +8,13 @@ where
 import Prelude hiding ((.), id, (<*))
 import Control.Applicative (liftA2)
 import Control.Category (Category((.)), id)
-import Control.Lens ((&), (<&>), (^.))
+import Control.Lens ((&), (<&>), (^.), index)
 import Control.Monad ( forM_, replicateM, forM )
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception
 import Data.Int (Int8, Int32)
 import Data.List ((\\), partition)
+import Data.Bits
 import Data.Word (Word8, Word16, Word32)
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
@@ -65,8 +66,8 @@ createFillDensityRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, Mo
 createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
     let (V3 size _ _) = head (texture3DSizes densityTexture)
 
-    planeBuffer :: Buffer os (B2 Float) <- newBuffer 6
-    writeBuffer planeBuffer 0 [V2 (-1) (-1), V2 1 (-1), V2 1 1, V2 1 1, V2 (-1) 1, V2 (-1) (-1)]
+    planeBuffer :: Buffer os (B2 Float) <- newBuffer 4
+    writeBuffer planeBuffer 0 [V2 (-1) (-1), V2 1 (-1), V2 (-1) 1, V2 1 1]
 
     heightBuffer :: Buffer os (B Float) <- newBuffer size
     writeBuffer heightBuffer 0 (fromIntegral <$> [0 .. size - 1])
@@ -94,7 +95,8 @@ createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
             gs' :: GeometryStream (GGenerativeGeometry Triangles ((VPos, VInt), VFloat)) = makeTriangle <$> gs
 
         let rasterOptions = const (Front, ViewPort 0 (pure size), DepthRange 0 1)
-        fs <- generateAndRasterize rasterOptions 3 gs'
+            maxVertices = 3
+        fs <- generateAndRasterize rasterOptions maxVertices gs'
             <&> withRasterizedInfo (\h info -> let V4 x y _ _ = rasterizedFragCoord info in V3 x y h)
 
         -- TODO Bug in my geometry shader support: not using every varying will lead to a crash.
@@ -105,15 +107,16 @@ createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
         let sample i p a b = sample3D (noiseSamplers !! i) SampleAuto Nothing Nothing (p * a / 256) * b
             f p =
                 let p' = p + offset
-                    density = p'^._z / blockSize
-                    -- density = (norm p' - 40) / 8
-                in  density
+                    -- density = p'^._z / blockSize
+                    density = (norm p' - 40) / 8
+                in  density {-
                     + sample 0 p' 4.03 0.25
                     + sample 1 p' 1.96 0.50
                     + sample 2 p' 1.01 1.00
                     + sample 3 p' 0.80 1.25
                     + sample 4 p' 0.50 1.50
                     + sample 5 p' 0.10 2.00
+                    -}
             fs' = f <$> fs
 
         draw (const NoBlending) fs' $
@@ -124,34 +127,151 @@ createFillDensityRenderer offsetBuffer densityTexture noiseTextures = do
         height <- newVertexArray heightBuffer
         let toV3 :: B2 Float -> B Float -> (B Float, B2 Float)
             toV3 i b = (b, i)
-        let primitiveArray = toPrimitiveArrayInstanced TriangleList toV3 plane height
+        let primitiveArray = toPrimitiveArrayInstanced TriangleStrip toV3 plane height
         image <- getLayeredTextureImage densityTexture 0
         shader (image, primitiveArray)
 
-generateCase :: Int -> [Int]
-generateCase 0 = [0]
-generateCase i = [ x + xs | x <- [0, 2^(i - 1)], xs <- generateCase (i - 1) ]
+generateBoolCases :: Int -> [[Bool]]
+generateBoolCases 0 = [[]]
+generateBoolCases i = [ x:xs | x <- [False, True], xs <- generateBoolCases (i - 1) ]
 
-generateBoolCase :: Int -> [[Bool]]
-generateBoolCase 0 = [[]]
-generateBoolCase i = [ x:xs | x <- [False, True], xs <- generateBoolCase (i - 1) ]
+instance Bits' Int where
+    and' = (.&.)
+    or' = (.|.)
+    xor' = xor
+    complement' = complement
+    shiftL' = shiftL
+    shiftR' = shiftR
+    bitSize' = finiteBitSize
 
-createGenerateBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
+encode :: (Num a, Bits' a) => [Int] -> [a] -> a
+encode sizes values = compositeValue where
+    positions = map fromIntegral $ scanl (+) 0 (init sizes)
+    compositeValue = foldl1 or' (zipWith shiftL' values positions)
+
+-- TODO Better to decode in VS instead of GS?
+decode :: (Num a, Bits' a) => [Int] -> a -> [a]
+decode sizes compositeValue = zipWith extract positions sizes where
+    positions = map fromIntegral $ scanl (+) 0 (init sizes)
+    extract position size = and' (shiftR' compositeValue position) (2^size-1)
+
+createGenerateBlockRenderer1 :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
     Buffer os (Uniform (B3 Float)) ->
     Texture3D os (Format RFloat) ->
     ContextT ctx os m (Buffer os (B3 Float, B3 Float) -> Render os ())
-createGenerateBlockRenderer window offsetBuffer densityTexture = do
+createGenerateBlockRenderer1 window offsetBuffer densityTexture = do
     let (V3 size _ _) = head (texture3DSizes densityTexture)
-        cellCount = (size - 1) ^ (3 :: Int)
-
-    let protoBlockBufferSize = cellCount * maxCellTriangleCount
-    protoBlockBuffer :: Buffer os (B Word32) <- newBuffer protoBlockBufferSize
+        cellCount = (size - 1) ^ 3
 
     cellPositionBuffer :: Buffer os (B3 Int8) <- newBuffer cellCount
     writeBuffer cellPositionBuffer 0 [ fromIntegral <$> V3 x y z | x <- [0 .. size-2], y <- [0 .. size-2], z <- [0 .. size-2] ]
 
-    let protoTriangleLists = map generateCaseProtoTriangleList (generateBoolCase 8)
+    let verticeCount = maxCellTriangleCount * 3 * 2 -- 3 edges (of 2 vertices) per triangle.
+
+    let protoTriangleLists = map generateCaseProtoTriangleList (generateBoolCases 8)
+        toCaseContent :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [V3 Int8] -- We only need a [0, 1] domain actually…
+        toCaseContent protoTriangleList = concatMap (\(e1, e2, e3) -> concatMap ((\(i1, i2) -> map (cube !!) [i1, i2]). (cubeEdges !!)) [e1, e2, e3]) protoTriangleList
+        toPaddedCaseContent protoTriangleList = take verticeCount (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
+
+    arityTexture :: Texture1D os (Format RInt) <- newTexture1D R8I 256 1
+    writeTexture1D arityTexture 0 0 256 (map (fromIntegral . length) protoTriangleLists :: [Int32])
+
+    casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 verticeCount 256) 1
+    writeTexture2D casesTexture 0 0 (V2 verticeCount 256) (concatMap toPaddedCaseContent protoTriangleLists)
+
+    shader :: CompiledShader os (Buffer os (B3 Float, B3 Float), PrimitiveArray Points (B3 Int8))  <- compileShader $ do
+
+        offset <- getUniform (const (offsetBuffer, 0))
+
+        -- This sample must be created before the densitySampler. Why?
+        floatDensitySampler <- newSampler3D (const (densityTexture, SamplerFilter Linear Linear Linear (Just 4), (pure ClampToEdge, undefined)))
+
+        densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+        aritySampler <- newSampler1D (const (arityTexture, SamplerNearest, (ClampToEdge, undefined)))
+        caseSampler <- newSampler2D (const (casesTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+
+        ps :: primitiveStream Points (V3 VInt) <- toPrimitiveStream snd
+
+        gs :: GeometryStream (Geometry Points (V3 VInt)) <- geometrize ps
+
+        let makeTriangles :: Geometry Points (V3 VInt) -> GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)
+            makeTriangles (Point p) = triangles
+                where
+                    getDensity :: V3 VInt -> VFloat
+                    getDensity = texelFetch3D densitySampler (pure 0) 0
+
+                    densities :: [VFloat]
+                    densities = map getDensity $ fmap (p +) cube
+
+                    getArity :: VInt -> VInt
+                    getArity = texelFetch1D aritySampler (pure 0) 0
+
+                    getCase :: V2 VInt -> V3 VInt
+                    getCase = texelFetch2D caseSampler (pure 0) 0
+
+                    -- 2^(7-i) benefits of being statically evaluated.
+                    cellCase :: VInt
+                    cellCase = foldl1 or' (zipWith (\i d -> ifB (d >* 0) (fromIntegral ((2^(7-i))::Int)) 0) [0..] densities)
+
+                    count = getArity cellCase
+
+                    triangles :: GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)
+                    (_, triangles) = while
+                        (\(i, _) -> i <* count)
+                        (\(i, gg) -> (i + 1, emitTriangle i gg))
+                        (0, generativeTriangleStrip)
+
+                    getNormal :: V3 VFloat -> V3 VFloat
+                    getNormal p = normal where
+                        p' = p - offset
+                        sample = sample3D floatDensitySampler (SampleLod 0) Nothing Nothing . (/ blockSize) . (p' +)
+                        grad = V3
+                            (sample (V3 1 0 0) - sample (V3 (-1) 0 0))
+                            (sample (V3 0 1 0) - sample (V3 0 (-1) 0))
+                            (sample (V3 0 0 1) - sample (V3 0 0 (-1)))
+                        normal = signorm grad
+
+                    emitTriangle i =
+                        let [a0, b0, a1, b1, a2, b2] = [ p + getCase (V2 (i * 6 + fromIntegral o) cellCase) | o <- [0..5] ]
+                            calculatePoint :: V3 VInt -> V3 VInt -> V3 VFloat
+                            calculatePoint v1 v2 = offset + (1 - a) *^ (toFloat <$> v1) + a *^ (toFloat <$> v2) where
+                                (d1, d2) = (getDensity v1, getDensity v2)
+                                a = d1 / (d1 - d2)
+                            p1 = calculatePoint a0 b0
+                            p2 = calculatePoint a1 b1
+                            p3 = calculatePoint a2 b2
+                        in  endPrimitive .
+                            emitVertex (p1, getNormal p1) .
+                            emitVertex (p3, getNormal p3) .
+                            emitVertex (p2, getNormal p2)
+
+            gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = gs <&> makeTriangles
+
+        let maxVertices = maxCellTriangleCount * 3
+        drawNothing window fst Queried maxVertices gs'
+
+    return $ \blockBuffer -> do
+        positions <- toPrimitiveArray PointList <$> newVertexArray cellPositionBuffer
+        shader (blockBuffer, positions)
+
+createGenerateBlockRenderer2 :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
+    Window os RGBAFloat Depth ->
+    Buffer os (Uniform (B3 Float)) ->
+    Texture3D os (Format RFloat) ->
+    ContextT ctx os m (Buffer os (B3 Float, B3 Float) -> Render os ())
+createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
+    let (V3 size _ _) = head (texture3DSizes densityTexture)
+        cellCount = (size - 1) ^ 3
+
+    cellPositionBuffer :: Buffer os (B3 Int8) <- newBuffer cellCount
+    writeBuffer cellPositionBuffer 0 [ fromIntegral <$> V3 x y z | x <- [0 .. size-2], y <- [0 .. size-2], z <- [0 .. size-2] ]
+
+    -- z5_y5_x5_edge5_edge5_edge5
+    let protoBlockBufferSize = cellCount * maxCellTriangleCount
+    protoBlockBuffer :: Buffer os (B Word32) <- newBuffer protoBlockBufferSize
+
+    let protoTriangleLists = map generateCaseProtoTriangleList (generateBoolCases 8)
         toCaseContent :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [V3 Int8]
         toCaseContent protoTriangleList = map (\(e1, e2, e3) -> fromIntegral <$> V3 e1 e2 e3) protoTriangleList
         toPaddedCaseContent protoTriangleList = take maxCellTriangleCount (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
@@ -162,7 +282,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
     casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 maxCellTriangleCount 256) 1
     writeTexture2D casesTexture 0 0 (V2 maxCellTriangleCount 256) (concatMap toPaddedCaseContent protoTriangleLists)
 
-    listVerticesShader :: CompiledShader os (PrimitiveArray Points (B3 Int8))  <- compileShader $ do
+    listTrianglesShader :: CompiledShader os (PrimitiveArray Points (B3 Int8))  <- compileShader $ do
 
         densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
         aritySampler <- newSampler1D (const (arityTexture, SamplerNearest, (ClampToEdge, undefined)))
@@ -196,7 +316,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                     protoTriangles :: GGenerativeGeometry Points VWord
                     (_, protoTriangles) = while
                         (\(i, _) -> i <* count)
-                        (\(i, gg) -> (i+1, emitProtoTriangle i gg))
+                        (\(i, gg) -> (i + 1, emitProtoTriangle i gg))
                         (0, generativePoints)
 
                     emitProtoTriangle :: VInt -> GGenerativeGeometry Points VWord -> GGenerativeGeometry Points VWord
@@ -205,7 +325,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
                             V3 e1 e2 e3 = toWord <$> getCase (V2 i cellCase)
                             -- GPU Gems code use a "z6_y6_x6_edge1_edge2_edge3" format which is weird.
                             -- 6 bit aren’t needed for [0, blockSize] position and 4 bits is not enough for a directed edges indice.
-                            z5_y5_x5_edge5_edge5_edge5 = foldl1 or' (zipWith shiftL' [z, y, x, e1, e2, e3] [25, 20, 15, 10, 5, 0])
+                            z5_y5_x5_edge5_edge5_edge5 = encode [5, 5, 5, 5, 5, 5] [z, y, x, e1, e2, e3]
                         in  endPrimitive . emitVertex z5_y5_x5_edge5_edge5_edge5 -- TODO Group endPrimitive calls?
 
             gs' :: GeometryStream (GGenerativeGeometry Points VWord) = makeProtoTriangles <$> gs
@@ -223,6 +343,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
 
         offset <- getUniform (const (offsetBuffer, 0))
 
+        -- This sample must be created before the densitySampler. Why?
         floatDensitySampler <- newSampler3D (const (densityTexture, SamplerFilter Linear Linear Linear (Just 4), (pure ClampToEdge, undefined)))
 
         densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
@@ -234,8 +355,7 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
         let toTriangles :: VWord -> V3 (V3 VFloat, V3 VFloat)
             toTriangles z5_y5_x5_edge5_edge5_edge5 = triangles
                 where
-                    extract position size = toInt (and' (shiftR' z5_y5_x5_edge5_edge5_edge5 position) (2^size-1))
-                    [z, y, x, e1, e2, e3] :: [VInt] = zipWith extract [25, 20, 15, 10, 5, 0] [5, 5, 5, 5, 5, 5]
+                    [z, y, x, e1, e2, e3] = map toInt $ decode [5, 5, 5, 5, 5, 5] z5_y5_x5_edge5_edge5_edge5
                     p = V3 x y z
 
                     getDensity :: V3 VInt -> VFloat
@@ -276,25 +396,329 @@ createGenerateBlockRenderer window offsetBuffer densityTexture = do
 
         gs :: GeometryStream (Geometry Points (V3 (V3 VFloat, V3 VFloat))) <- geometrize ps'
 
-        -- Any extension for pure pass-through GS in OpenGL?
-        let makeTriangles :: Geometry Points (V3 (V3 VFloat, V3 VFloat)) -> GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)
-            makeTriangles (Point (V3 (p1, n1) (p2, n2) (p3, n3))) = generativeTriangleStrip
+        let makeTriangle :: Geometry Points (V3 (V3 VFloat, V3 VFloat)) -> GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)
+            makeTriangle (Point (V3 (p1, n1) (p2, n2) (p3, n3))) = generativeTriangleStrip
                 & emitVertex (p2, n2)
                 & emitVertex (p3, n3)
                 & emitVertex (p1, n1)
                 & endPrimitive
 
-            gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = gs <&> makeTriangles
+            gs' :: GeometryStream (GGenerativeGeometry Triangles (V3 VFloat, V3 VFloat)) = makeTriangle <$> gs
 
         let maxVertices = 3
         drawNothing window fst Queried maxVertices gs'
 
     return $ \blockBuffer -> do
         positions <- toPrimitiveArray PointList <$> newVertexArray cellPositionBuffer
-        listVerticesShader positions
+        listTrianglesShader positions
         -- TODO Should be nice to be able to abort here on an empty list.
         protoBlocks <- toPrimitiveArray PointList <$> newVertexArray protoBlockBuffer
         genVerticesShader (blockBuffer, (protoBlockBuffer, protoBlocks))
+
+createGenerateBlockRenderer3 :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
+    Window os RGBAFloat Depth ->
+    Buffer os (Uniform (B3 Float)) ->
+    Texture3D os (Format RFloat) ->
+    ContextT ctx os m (Buffer os (B3 Float, B3 Float) -> Buffer os (B Word32) -> Render os ())
+createGenerateBlockRenderer3 window offsetBuffer densityTexture = do
+    let (V3 size _ _) = head (texture3DSizes densityTexture)
+        extCellCount = size ^ 3
+
+    extCellPositionBuffer :: Buffer os (B3 Int8) <- newBuffer extCellCount
+    writeBuffer extCellPositionBuffer 0 [ fromIntegral <$> V3 x y z | x <- [0 .. size-1], y <- [0 .. size-1], z <- [0 .. size-1] ]
+
+    -- z8_y8_x8_case8
+    let protoBlockBuffer1Size = extCellCount
+    protoBlockBuffer1 :: Buffer os (B Word32) <- newBuffer protoBlockBuffer1Size
+
+    listNonEmptyCells :: CompiledShader os (PrimitiveArray Points (B3 Int8))  <- compileShader $ do
+
+        densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+
+        ps :: primitiveStream Points (V3 VInt) <- toPrimitiveStream id
+
+        gs :: GeometryStream (Geometry Points (V3 VInt)) <- geometrize ps
+
+        let makeMarks :: Geometry Points (V3 VInt) -> GGenerativeGeometry Points VWord
+            makeMarks (Point p) = marks
+                where
+                    getDensity :: V3 VInt -> VFloat
+                    getDensity = texelFetch3D densitySampler (pure 0) 0
+
+                    densities :: [VFloat]
+                    densities = map (getDensity . (p +)) cube
+
+                    -- 2^(7-i) benefits of being statically evaluated.
+                    cellCase :: VInt
+                    cellCase = foldl1 or' (zipWith (\i d -> ifB (d >* 0) (fromIntegral ((2^(7-i))::Int)) 0) [0..] densities)
+
+                    marks :: GGenerativeGeometry Points VWord
+                    marks = ifThenElse (cellCase /=* 0 &&* cellCase /=* 255) emitMark id generativePoints
+
+                    emitMark :: GGenerativeGeometry Points VWord -> GGenerativeGeometry Points VWord
+                    emitMark =
+                        let V3 x y z = toWord <$> p
+                            c = toWord cellCase
+                            z8_y8_x8_case8 = encode [8, 8, 8, 8] [z, y, x, c]
+                        in  endPrimitive . emitVertex z8_y8_x8_case8
+
+            gs' :: GeometryStream (GGenerativeGeometry Points VWord) = makeMarks <$> gs
+
+        let maxVertices = 1
+        drawNothing window (const protoBlockBuffer1) Queried maxVertices gs'
+
+    -- z8_y8_x8_edge8
+    let protoBlockBuffer2Size = extCellCount * 3
+    protoBlockBuffer2 :: Buffer os (B Word32) <- newBuffer protoBlockBuffer2Size
+
+    listVertToGenerateShader :: CompiledShader os (Buffer os (B Word32), PrimitiveArray Points (B Word32))  <- compileShader $ do
+
+        ps :: primitiveStream Points VWord <- toFeedbackPrimitiveStream fst snd
+
+        gs :: GeometryStream (Geometry Points VWord) <- geometrize ps
+
+        let makeProtoVertices :: Geometry Points VWord -> GGenerativeGeometry Points VWord
+            makeProtoVertices (Point z8_y8_x8_case8) = protoVertices
+                where
+                    [z, y, x, c] = decode [8, 8, 8, 8] z8_y8_x8_case8
+                    p = V3 x y z
+
+                    protoVertices :: GGenerativeGeometry Points VWord
+                    protoVertices = foldl
+                        (\gg (edgeIndice, verticeIndice) -> ifThenElse (hasAnEdge verticeIndice) (emitProtoVertice verticeIndice) id gg) generativePoints
+                        [(0, 1), (1, 2), (2, 4)]
+
+                    hasAnEdge :: VWord -> VBool
+                    hasAnEdge verticeIndice = and' (shiftR' c 7) 1 /=* and' (shiftR' c (7-verticeIndice)) 1
+
+                    emitProtoVertice :: VWord -> GGenerativeGeometry Points VWord -> GGenerativeGeometry Points VWord
+                    emitProtoVertice verticeIndice =
+                        let z8_y8_x8_edge8 = encode [8, 8, 8, 8] [z, y, x, verticeIndice]
+                        in  endPrimitive . emitVertex z8_y8_x8_edge8
+
+            gs' :: GeometryStream (GGenerativeGeometry Points VWord) = makeProtoVertices <$> gs
+
+        let maxVertices = 3
+        drawNothing window (const protoBlockBuffer2) Queried maxVertices gs'
+
+    cubeVerticeSampler :: Texture1D os (Format RGBInt) <- newTexture1D RGB8I (length cube) 1
+    writeTexture1D cubeVerticeSampler 0 0 (length cube) (cube :: [V3 Int8])
+
+    genVerticesShader :: CompiledShader os (Buffer os (B3 Float, B3 Float), (Buffer os (B Word32), PrimitiveArray Points (B Word32)))  <- compileShader $ do
+
+        offset <- getUniform (const (offsetBuffer, 0))
+
+        -- This sample must be created before the densitySampler. Why?
+        floatDensitySampler <- newSampler3D (const (densityTexture, SamplerFilter Linear Linear Linear (Just 4), (pure ClampToEdge, undefined)))
+        densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+
+        cubeVerticeSampler <- newSampler1D (const (cubeVerticeSampler, SamplerNearest, (ClampToEdge, undefined)))
+
+        ps :: primitiveStream Points VWord <- toFeedbackPrimitiveStream (fst . snd) (snd . snd)
+
+        let toVertice :: VWord -> (V3 VFloat, V3 VFloat)
+            toVertice z8_y8_x8_edge8 = vertice
+                where
+                    [z, y, x, verticeIndice] = map toInt $ decode [8, 8, 8, 8] z8_y8_x8_edge8
+                    p = V3 x y z
+
+                    getDensity :: V3 VInt -> VFloat
+                    getDensity = texelFetch3D densitySampler (pure 0) 0
+
+                    getCubeVertice :: VInt -> V3 VInt
+                    getCubeVertice i = texelFetch1D cubeVerticeSampler (pure 0) 0 i
+
+                    vertice :: (V3 VFloat, V3 VFloat)
+                    vertice = createVertice verticeIndice
+
+                    getNormal :: V3 VFloat -> V3 VFloat
+                    getNormal v = normal where
+                        sample = sample3D floatDensitySampler (SampleLod 0) Nothing Nothing . (/ blockSize) . (v +)
+                        grad = V3
+                            (sample (V3 1 0 0) - sample (V3 (-1) 0 0))
+                            (sample (V3 0 1 0) - sample (V3 0 (-1) 0))
+                            (sample (V3 0 0 1) - sample (V3 0 0 (-1)))
+                        normal = signorm grad
+
+                    createVertice i =
+                        let v1 = p + getCubeVertice 0
+                            v2 = p + getCubeVertice i
+                            calculatePoint :: V3 VInt -> V3 VInt -> V3 VFloat
+                            calculatePoint v1 v2 = (1 - a) *^ (toFloat <$> v1) + a *^ (toFloat <$> v2) where
+                                (d1, d2) = (getDensity v1, getDensity v2)
+                                a = maxB 0 . minB 1 $ d1 / (d1 - d2)
+                            v = calculatePoint v1 v2
+                        in  (offset + v, getNormal v)
+
+        let ps' :: primitiveStream Points (V3 VFloat, V3 VFloat) = toVertice <$> ps
+
+        gs :: GeometryStream (Geometry Points (V3 VFloat, V3 VFloat)) <- geometrize ps'
+
+        let makeVertice :: Geometry Points (V3 VFloat, V3 VFloat) -> GGenerativeGeometry Points (V3 VFloat, V3 VFloat)
+            makeVertice (Point (p, n)) = generativePoints
+                & emitVertex (p, n)
+                & endPrimitive
+
+            gs' :: GeometryStream (GGenerativeGeometry Points (V3 VFloat, V3 VFloat)) = makeVertice <$> gs
+
+        let maxVertices = 1
+        drawNothing window fst Queried maxVertices gs'
+
+    {-
+    protoBlockBuffer2' :: Buffer os (B Word32) <- newBuffer 6
+    writeBuffer protoBlockBuffer2' 0
+        [ fromIntegral (encode [8, 8, 8, 8] [0, 0, 0, 1] :: Int)
+        , fromIntegral (encode [8, 8, 8, 8] [0, 0, 0, 2] :: Int) -- 0 16 16
+        , fromIntegral (encode [8, 8, 8, 8] [3, 5, 7, 4] :: Int) -- 3 19 18
+        , fromIntegral (encode [8, 8, 8, 8] [10, 10, 10, 2] :: Int) -- 10 21 21
+        , fromIntegral (encode [8, 8, 8, 8] [31, 10, 31, 4] :: Int)
+        , fromIntegral (encode [8, 8, 8, 8] [32, 20, 32, 4] :: Int)
+        ]
+    -}
+
+    splatVertexIdsTexture :: Texture3D os (Format RWord) <- newTexture3D R32UI (V3 (3 * size) size size) 1
+    writeTexture3D splatVertexIdsTexture 0 (V3 0 0 0) (V3 (3 * size) size size) (repeat 0 :: [Word32])
+
+    splatVertexIdsShader :: CompiledShader os (Image (Format RWord), (Buffer os (B Word32), PrimitiveArray Points (B Word32)))  <- compileShader $ do
+
+        let extractVertice :: VWord -> V3 VInt
+            extractVertice z8_y8_x8_edge8 = V3 x' y z
+                where
+                    [z, y, x, verticeIndice] = map toInt $ decode [8, 8, 8, 8] z8_y8_x8_edge8
+                    x' = 3 * x + div' verticeIndice 2
+        ps :: PrimitiveStream Points (V3 VInt, VWord) <- toFeedbackPrimitiveStream (fst . snd) (snd . snd) -- toPrimitiveStream (snd . snd)
+            <&> withInputIndices (\p indices -> (extractVertice p, toWord $ inputVertexID indices))
+
+        gs :: GeometryStream (Geometry Points (V3 VInt, VWord)) <- geometrize ps
+        let
+            toNcd c m = (toFloat c + 0.5) / fromIntegral m * 2 - 1
+            splat :: Geometry Points (V3 VInt, VWord) -> GGenerativeGeometry Points ((VPos, VInt), VWord)
+            splat (Point (V3 x' y z, i)) = generativePoints
+                & emitVertexPositionAndLayer ((V4 (toNcd x' (3 * size)) (toNcd y size) 0 1, z), i)
+                & endPrimitive
+            gs' :: GeometryStream (GGenerativeGeometry Points ((VPos, VInt), VWord)) = splat <$> gs
+
+        let rasterOptions = const (Front, ViewPort 0 (V2 (3 * size) size), DepthRange 0 1)
+            maxVertices = 1
+        fs :: FragmentStream FWord <- generateAndRasterize rasterOptions maxVertices gs'
+
+        draw (const NoBlending) fs $
+            drawColor (\env -> (fst env, True, False))
+
+    let protoTriangleLists = map generateCaseProtoTriangleList (generateBoolCases 8)
+        toCaseContent :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [V3 Int8]
+        toCaseContent protoTriangleList = map (\(e1, e2, e3) -> fromIntegral <$> V3 e1 e2 e3) protoTriangleList
+        toPaddedCaseContent protoTriangleList = take maxCellTriangleCount (toCaseContent protoTriangleList ++ repeat (V3 0 0 0))
+
+    arityTexture :: Texture1D os (Format RInt) <- newTexture1D R8I 256 1
+    writeTexture1D arityTexture 0 0 256 (map (fromIntegral . length) protoTriangleLists :: [Int32])
+
+    casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 maxCellTriangleCount 256) 1
+    writeTexture2D casesTexture 0 0 (V2 maxCellTriangleCount 256) (concatMap toPaddedCaseContent protoTriangleLists)
+
+    let edgeToSplatCoords :: [(V3 Int, Int)]
+        edgeToSplatCoords =
+            [ (V3 0 0 0, 0)
+            , (V3 0 0 0, 1)
+            , (V3 0 0 0, 2)
+            , (V3 0 0 0, 0)
+            , (V3 1 0 0, 1)
+            , (V3 1 0 0, 2)
+            , (V3 0 0 0, 1)
+            , (V3 0 1 0, 0)
+            , (V3 0 1 0, 2)
+            , (V3 1 0 0, 1)
+            , (V3 0 1 0, 0)
+            , (V3 1 1 0, 2)
+            , (V3 0 0 0, 2)
+            , (V3 0 0 1, 0)
+            , (V3 0 0 1, 1)
+            , (V3 1 0 0, 2)
+            , (V3 0 0 1, 0)
+            , (V3 1 0 1, 1)
+            , (V3 0 1 0, 2)
+            , (V3 0 0 1, 1)
+            , (V3 0 1 1, 0)
+            , (V3 1 1 0, 2)
+            , (V3 1 0 1, 1)
+            , (V3 0 1 1, 0)
+            ]
+
+    -- TODO R8I?
+    edgeToSplatCoordsTexture :: Texture1D os (Format RWord) <- newTexture1D R8UI (length edgeToSplatCoords) 1
+    writeTexture1D edgeToSplatCoordsTexture 0 0 (length edgeToSplatCoords) (map (\(V3 dx dy dz, o) -> fromIntegral $ encode [2, 2, 2, 2] [dx, dy, dz, o] :: Word32) edgeToSplatCoords)
+
+    genIndicesShader :: CompiledShader os (Buffer os (B Word32), (Buffer os (B Word32), PrimitiveArray Points (B Word32)))  <- compileShader $ do
+
+        aritySampler <- newSampler1D (const (arityTexture, SamplerNearest, (ClampToEdge, undefined)))
+        caseSampler <- newSampler2D (const (casesTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+        edgeToSplatCoordsSampler <- newSampler1D (const (edgeToSplatCoordsTexture, SamplerNearest, (ClampToEdge, undefined)))
+        splatVertexIdsSampler <- newSampler3D (const (splatVertexIdsTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+
+        ps :: primitiveStream Points VWord <- toFeedbackPrimitiveStream (fst . snd) (snd . snd)
+
+        gs :: GeometryStream (Geometry Points VWord) <- geometrize ps
+
+        let makeTriangles :: Geometry Points VWord -> GGenerativeGeometry Triangles VWord
+            makeTriangles (Point z8_y8_x8_case8) = triangles'
+                where
+                    [z, y, x, c] = decode [8, 8, 8, 8] z8_y8_x8_case8
+                    cellCase = toInt c
+
+                    getArity :: VInt -> VInt
+                    getArity = texelFetch1D aritySampler (pure 0) 0
+
+                    getCase :: V2 VInt -> V3 VInt
+                    getCase = texelFetch2D caseSampler (pure 0) 0
+
+                    getEdgeToSplatCoords :: VInt -> VWord
+                    getEdgeToSplatCoords = texelFetch1D edgeToSplatCoordsSampler (pure 0) 0
+
+                    getIndex :: VInt -> VWord
+                    getIndex e = texelFetch3D splatVertexIdsSampler (pure 0) 0 p
+                        where
+                            p = toInt <$> V3 (3 * (x + dx) + o) (y + dy) (z + dz)
+                            [dx, dy, dz, o] = decode [2, 2, 2, 2] (getEdgeToSplatCoords e)
+
+                    count = getArity cellCase
+
+                    triangles' = ifThenElse'
+                        (x <* blockSize &&* y <* blockSize &&* z <* blockSize)
+                        triangles
+                        generativeTriangleStrip
+
+                    triangles :: GGenerativeGeometry Triangles VWord
+                    (_, triangles) = while
+                        (\(i, _) -> i <* count)
+                        (\(i, gg) -> (i + 1, emitTriangleIndexes i gg))
+                        (0, generativeTriangleStrip)
+
+                    emitTriangleIndexes i =
+                        let V3 e1 e2 e3 = getCase (V2 i cellCase)
+                            i1 = getIndex e1
+                            i2 = getIndex e2
+                            i3 = getIndex e3
+                        in  endPrimitive .
+                            emitVertex i1 .
+                            emitVertex i3 .
+                            emitVertex i2
+
+            gs' :: GeometryStream (GGenerativeGeometry Triangles VWord) = gs <&> makeTriangles
+
+        let maxVertices = maxCellTriangleCount * 3
+        drawNothing window fst Queried maxVertices gs'
+
+    return $ \blockBuffer indexBuffer -> do
+        positions <- toPrimitiveArray PointList <$> newVertexArray extCellPositionBuffer
+        listNonEmptyCells positions
+        protoBlocks1 <- toPrimitiveArray PointList <$> newVertexArray protoBlockBuffer1
+        listVertToGenerateShader (protoBlockBuffer1, protoBlocks1)
+        protoBlocks2 <- toPrimitiveArray PointList <$> newVertexArray protoBlockBuffer2
+        genVerticesShader (blockBuffer, (protoBlockBuffer2, protoBlocks2))
+        splatVertexIds <- getLayeredTextureImage splatVertexIdsTexture 0
+        -- protoBlocks2' <- toPrimitiveArray PointList <$> newVertexArray protoBlockBuffer2'
+        splatVertexIdsShader (splatVertexIds, (protoBlockBuffer2, protoBlocks2))
+        genIndicesShader (indexBuffer, (protoBlockBuffer1, protoBlocks1))
 
 createBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
@@ -332,9 +756,49 @@ createBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
         drawWindowColorDepth (const (window, colorOption, depthOption)) fs
 
     return $ \(viewPort, blockBuffer) -> do
-        -- What is the cost of calling toPrimitiveArray for each block?
         block <- toPrimitiveArray TriangleList <$> newVertexArray blockBuffer
         shader (viewPort, (blockBuffer, block))
+
+createIndexedBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
+    Window os RGBAFloat Depth ->
+    Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
+    Buffer os (Uniform FogB) ->
+    Buffer os (Uniform DirectionLightB) ->
+    ContextT ctx os m ((ViewPort, (Buffer os (B3 Float, B3 Float), Buffer os (B Word32))) -> Render os ())
+createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
+    shader :: CompiledShader os (ViewPort, (Buffer os (B Word32), PrimitiveArray Triangles (B3 Float, B3 Float)))  <- compileShader $ do
+
+        (projectionMat, cameraMat, cameraPos) <- getUniform (const (projectionBuffer, 0))
+        let modelViewProj = projectionMat !*! cameraMat
+
+        ps :: primitiveStream Triangles (V3 VFloat, V3 VFloat) <- toFeedbackPrimitiveStream (fst . snd) (snd . snd)
+        let ps' :: primitiveStream Triangles (VPos, (V3 VFloat, V3 VFloat, V3 VFloat)) = ps <&> \(p, n) -> (modelViewProj !* point p, (p, n, cameraPos))
+
+        fog :: FogS F <- getUniform (const (fogBuffer, 0))
+        sun :: DirectionLightS F <- getUniform (const (sunBuffer, 0))
+
+        let rasterOptions = \(viewPort, _) -> (FrontAndBack, viewPort, DepthRange 0 1)
+        fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions ps' <&> withRasterizedInfo (\(p, n, cp) ri ->
+                let lightingContext =
+                        ( cp
+                        , fog
+                        , sun
+                        , 0.8 -- material specular intensity
+                        , 8 -- material specular power
+                        )
+                    material = V4 1 0.1 0.2 1
+                    c = getSunlight undefined n Nothing p material 1 lightingContext
+                in  (c, rasterizedFragCoord ri ^. _z))
+
+        let colorOption = ContextColorOption NoBlending (pure True)
+            depthOption = DepthOption Less True
+        drawWindowColorDepth (const (window, colorOption, depthOption)) fs
+
+    return $ \(viewPort, (blockBuffer, indexBuffer)) -> do
+        indexedBlock <- toPrimitiveArrayIndexed TriangleList
+            <$> newIndexArray indexBuffer Nothing
+            <*> newVertexArray blockBuffer
+        shader (viewPort, (indexBuffer, indexedBlock))
 
 createBlockOutlineRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
@@ -491,14 +955,6 @@ createGridRenderer window projectionBuffer fogBuffer = do
         gridPrimArray <- toPrimitiveArray TriangleList <$> newVertexArray gridBuffer
         shader (viewPort, gridPrimArray)
 
-{-
-Calculer la AABB pour le frustum complet.
-Identifier les blocs 4x4x4 de cette AABB en intersection avec le frustum.
-Subdiviser les blocs (2x2x2) aussi en intersection avec le frustum intermédiaire.
-Subdiviser encore les blocs (1x1x1) en intersection avec le frustum proche.
-
-Afficher les blocs dans une vue de dieu.
--}
 createFrustumRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
@@ -541,8 +997,8 @@ generateBlocks :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Dept
 generateBlocks window = do
     let blockBufferSize = blockSize^3 * maxCellTriangleCount * 3
 
-        -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [0], y <- [0], z <- [0] ]
-        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 2] ]
+        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [0], y <- [0], z <- [0] ]
+        -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 2] ]
         -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-5 .. 4], y <- [-5 .. 4], z <- [-3 .. 2] ]
 
     offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
@@ -550,13 +1006,13 @@ generateBlocks window = do
     noiseTextures :: [Texture3D os (Format RFloat)] <- take 6 . cycle <$> replicateM 3 (generate3DNoiseTexture (16, 16, 16))
 
     fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture noiseTextures
-    generateBlock <- createGenerateBlockRenderer window offsetBuffer densityTexture
+    generateBlock <- createGenerateBlockRenderer2 window offsetBuffer densityTexture
 
     let generateCellFromOffset offset blockBuffer = do
             writeBuffer offsetBuffer 0 [offset]
             render $ fillDensityTexture >> generateBlock blockBuffer
-            size <- liftIO $ feedbackBufSize (undefined :: Triangles) blockBuffer
-            liftIO $ infoM "Hadron" $ "Block size: " ++ show size
+            blockSize <- liftIO $ feedbackBufSize (undefined :: Triangles) blockBuffer
+            liftIO $ debugM "Hadron" $ "block size: " ++ show blockSize
 
     blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
 
@@ -566,10 +1022,43 @@ generateBlocks window = do
 
     return blockBuffers
 
+generateIndexedBlocks :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m [(Buffer os (B3 Float, B3 Float), Buffer os (B Word32))]
+generateIndexedBlocks window = do
+    let blockBufferSize = blockSize^3 * 3
+        indexBufferSize = blockSize^3 * maxCellTriangleCount * 3
+
+        -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-1], y <- [-1], z <- [0] ]
+        -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [0 .. 1], y <- [0 .. 1], z <- [0 .. 1] ]
+        offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 2] ]
+
+    offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
+    densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure (blockSize + 1)) 1
+    noiseTextures :: [Texture3D os (Format RFloat)] <- take 6 . cycle <$> replicateM 3 (generate3DNoiseTexture (16, 16, 16))
+
+    fillDensityTexture <- createFillDensityRenderer offsetBuffer densityTexture noiseTextures
+    generateBlock <- createGenerateBlockRenderer3 window offsetBuffer densityTexture
+
+    let generateCellFromOffset offset blockBuffer indexBuffer = do
+            writeBuffer offsetBuffer 0 [offset]
+            render $ fillDensityTexture >> generateBlock blockBuffer indexBuffer
+            blockSize <- liftIO $ feedbackBufSize (undefined :: Triangles) blockBuffer
+            indexSize <- liftIO $ feedbackBufSize (undefined :: Triangles) indexBuffer
+            liftIO $ debugM "Hadron" $ "block size: " ++ show blockSize ++ " / index size: " ++ show indexSize
+
+    blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- replicateM (length offsets) (newBuffer blockBufferSize)
+    indexBuffers :: [Buffer os (B Word32)] <- replicateM (length offsets) (newBuffer blockBufferSize)
+
+    -- Creating blocks.
+    forM_ (zip3 offsets blockBuffers indexBuffers) $ \(offset, blockBuffer, indexBuffer) -> do
+        generateCellFromOffset offset blockBuffer indexBuffer
+
+    return $ zip blockBuffers indexBuffers
+
 -- glxinfo | egrep -i 'Currently available dedicated video memory'
 createPolygonisationRenderer :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m (RenderContext m os)
 createPolygonisationRenderer window = do
-    blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- generateBlocks window
+    -- blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- generateBlocks window
+    indexedBlockBuffers :: [(Buffer os (B3 Float, B3 Float), Buffer os (B Word32))] <- generateIndexedBlocks window
 
     fogBuffer :: Buffer os (Uniform FogB) <- newBuffer 1
     sunBuffer :: Buffer os (Uniform DirectionLightB) <- newBuffer 1
@@ -577,11 +1066,12 @@ createPolygonisationRenderer window = do
     offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
     outlineBuffer :: Buffer os (B Float, B3 Float) <- newBuffer 400
 
-    blockRenderer <- createBlockRenderer window projectionBuffer fogBuffer sunBuffer
-    blockOutlineRenderer <- createBlockOutlineRenderer window offsetBuffer projectionBuffer
-    blockOutlinesRenderer <- createBlockOutlinesRenderer window projectionBuffer outlineBuffer
-    gridRenderer <- createGridRenderer window projectionBuffer fogBuffer
-    frustumRenderer <- createFrustumRenderer window projectionBuffer
+    -- blockRenderer <- createBlockRenderer window projectionBuffer fogBuffer sunBuffer
+    indexedBlockRenderer <- createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer
+    -- -- blockOutlineRenderer <- createBlockOutlineRenderer window offsetBuffer projectionBuffer
+    -- -- blockOutlinesRenderer <- createBlockOutlinesRenderer window projectionBuffer outlineBuffer
+    -- -- gridRenderer <- createGridRenderer window projectionBuffer fogBuffer
+    -- -- frustumRenderer <- createFrustumRenderer window projectionBuffer
 
     writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.2]
     writeBuffer offsetBuffer 0 [pure 0]
@@ -605,11 +1095,12 @@ createPolygonisationRenderer window = do
                 clearWindowColor window (point skyBlue)
                 clearWindowDepth window 1
                 let viewPort = ViewPort (V2 x y) (V2 w h)
-                forM_ blockBuffers $ \blockBuffer -> blockRenderer (viewPort, blockBuffer)
+                -- forM_ blockBuffers $ \blockBuffer -> blockRenderer (viewPort, blockBuffer)
+                forM_ indexedBlockBuffers $ \indexedBlockBuffer -> indexedBlockRenderer (viewPort, indexedBlockBuffer)
                 -- blockOutlineRenderer viewPort
-                frustumRenderer viewPort
-                blockOutlinesRenderer viewPort (length blocks)
-                gridRenderer viewPort
+                -- -- frustumRenderer viewPort
+                -- -- blockOutlinesRenderer viewPort (length blocks)
+                -- -- gridRenderer viewPort
 
             return $ RenderContext Nothing renderIt
 

@@ -183,13 +183,13 @@ mainLoop window counter (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueue
     -- Calculate the FPS.
     mt2 <- liftIO GLFW.getTime
     let elapsedSeconds = fromMaybe 1 ((-) <$> mt2 <*> mt0)
-    (_, timing) <- if elapsedSeconds > 0.25
+    timing <- if elapsedSeconds > 0.25
         then do
             let fps = fromIntegral frameCount / elapsedSeconds
             liftIO $ debugM "Hadron" ("FPS: " ++ showGFloat (Just 2) fps "")
-            return (Just fps, (0, mt2, mt2))
+            return (1, mt2, mt2)
         else
-            return (Nothing, (frameCount + 1, mt0, mt2))
+            return (frameCount + 1, mt0, mt2)
 
     (V2 w h) <- getFrameBufferSize window
     liftIO $ modifyIORef uiRef (layout (w, h))

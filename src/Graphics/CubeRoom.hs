@@ -196,8 +196,8 @@ createCubeRoomRenderer window = do
     sunBuffer :: Buffer os (Uniform DirectionLightB) <- newBuffer 1
     projectionBuffer :: Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) <- newBuffer 1
 
-    let allCases = generateBoolCase 8
-        cubePosition i = fromIntegral <$> 2 * V3 (i `mod` 8) (i `div` 8) 0
+    let allCases = concat $ replicate 16 $ generateBoolCase 8
+        cubePosition i = fromIntegral <$> 2 * V3 ((i `mod` 256) `mod` 16) ((i `mod` 256) `div` 16) (i `div` 256)
 
         createCorners (i, aboveness) = zipWith (\p c -> (cubePosition i + fmap fromIntegral p, if c then 1 else 0)) cube aboveness
         corners = concatMap createCorners (zip [0..] allCases)
