@@ -38,7 +38,7 @@ getFormatName dynamicImage = case dynamicImage of
     ImageCMYK8 _    -> ("CMYK8",    "an image in the colorspace CMYK")
     ImageCMYK16 _   -> ("CMYK16",   "an image in the colorspace CMYK and 16 bits precision")
 
-loadImage :: String -> ContextT GLFW.Handle os IO (Maybe (Texture2D os (Format RGBFloat)))
+loadImage :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => String -> ContextT ctx os m (Maybe (Texture2D os (Format RGBFloat)))
 loadImage path = do
     let loadPixels image = do
             let size = V2 (imageWidth image) (imageHeight image)
@@ -49,10 +49,10 @@ loadImage path = do
 
     liftIO (readImage path) >>= \case
         Left e -> do
-            liftIO $ errorM "Kage" ("could not load image " ++ path ++ ": " ++ e)
+            liftIO $ errorM "Hadron" ("could not load image " ++ path ++ ": " ++ e)
             return Nothing
         Right dynamicImage -> do
-            liftIO $ infoM "Kage" ("Loading image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+            liftIO $ infoM "Hadron" ("Loading image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
             case dynamicImage of
                 -- ImageY8 image -> loadPixels image
                 ImageRGB8 image -> loadPixels image
@@ -61,11 +61,10 @@ loadImage path = do
                     let image' = convertImage image :: JP.Image PixelRGB8
                     in  loadPixels image'
                 _ -> do
-                    liftIO $ errorM "Kage" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+                    liftIO $ errorM "Hadron" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
                     return Nothing
 
-
-saveDepthTexture :: (MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format Depth) -> String -> ContextT GLFW.Handle os m ()
+saveDepthTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format Depth) -> String -> ContextT ctx os m ()
 saveDepthTexture (w, h) texture path = do
     let level = 0
         f a p = return (p : a)
@@ -76,7 +75,7 @@ saveDepthTexture (w, h) texture path = do
         image = generateImage getPixel w h
     liftIO $ savePngImage path (ImageYF image)
 
-saveTexture :: (MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format RGBFloat) -> String -> ContextT GLFW.Handle os m ()
+saveTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format RGBFloat) -> String -> ContextT ctx os m ()
 saveTexture (w, h) texture path = do
     let level = 0
         f a p = return (p : a)
@@ -87,7 +86,7 @@ saveTexture (w, h) texture path = do
         image = generateImage getPixel w h
     liftIO $ savePngImage path (ImageRGBF image)
 
-generateNoiseTexture :: MonadIO m => (Int, Int) -> ContextT GLFW.Handle os m (Texture2D os (Format RGBFloat))
+generateNoiseTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => (Int, Int) -> ContextT ctx os m (Texture2D os (Format RGBFloat))
 generateNoiseTexture (width, height) = do
     noise <- liftIO $ replicateM (width * height) $ do
         [x, y] <- replicateM 2 (runRandomIO $ getRandomR (0, 1)) :: IO [Float]
@@ -97,7 +96,7 @@ generateNoiseTexture (width, height) = do
     writeTexture2D texture 0 0 size noise
     return texture
 
-generate3DNoiseTexture :: MonadIO m => (Int, Int, Int) -> ContextT GLFW.Handle os m (Texture3D os (Format RFloat))
+generate3DNoiseTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => (Int, Int, Int) -> ContextT ctx os m (Texture3D os (Format RFloat))
 generate3DNoiseTexture (width, height, depth) = do
     noise <- liftIO $ replicateM (width * height * depth) $ do
         runRandomIO $ (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: IO Float

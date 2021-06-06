@@ -18,6 +18,8 @@ import Data.Bits
 import Data.Word (Word8, Word16, Word32)
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import qualified Codec.Picture as Juicy
+import qualified Codec.Picture.Types as Juicy
 import System.Log.Logger
 
 import Common.Debug
@@ -73,29 +75,20 @@ densityMargin = 6
 
 -- Low frequency octates first, so a small count works for long-range sampling.
 calculateDensity :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Float) -> V3 (S x Float) -> S x Float
-calculateDensity octaveCount noiseSamplers offset p =
-    let sample i p a b = sample3D (cycle noiseSamplers !! i) (SampleLod 0) Nothing Nothing (p * a / 256) * b
-        p' = p + offset
-        density = p'^._z / 16
-        -- density = (minB (norm p') (norm (p' + V3 40 0 0)) - 40) / 8
-    in  density + sum (zipWith (\i (a, b) -> sample i p' a b) [0..octaveCount-1]
-            {-
-            [ (0.10, 2.00)
-            , (0.50, 1.50)
-            , (0.80, 1.25)
-            , (1.01, 1.00)
-            , (1.96, 0.50)
-            , (4.03, 0.25)
-            ])
-            -}
-            [ (0.10, 6.40)
-            , (0.20, 3.20)
-            , (0.40, 1.60)
-            , (0.80, 0.80)
-            , (1.60, 0.40)
-            , (3.20, 0.20)
-            , (6.40, 0.10)
-            ])
+calculateDensity octaveCount noiseSamplers offset p = density where
+    sample i p a b = sample3D (cycle noiseSamplers !! i) (SampleLod 0) Nothing Nothing (p * a / 256) * b
+    p' = p + offset
+    base = p'^._z / 16
+    -- base = (minB (norm p') (norm (p' + V3 40 0 0)) - 40) / 8
+    density = base + sum (zipWith (\i (a, b) -> sample i p' a b) [0..octaveCount-1]
+        [ (0.10, 6.40)
+        , (0.20, 3.20)
+        , (0.40, 1.60)
+        , (0.80, 0.80)
+        , (1.60, 0.40)
+        , (3.20, 0.20)
+        , (6.40, 0.10)
+        ])
 
 createFillDensityRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Buffer os (Uniform (B3 Float)) ->
@@ -817,6 +810,10 @@ createIndexedBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, M
     Buffer os (Uniform DirectionLightB) ->
     ContextT ctx os m ((ViewPort, (Buffer os (B4 Float, B3 Float), Buffer os (B Word32))) -> Render os ())
 createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
+
+    Just altMap <- loadImage "data/altmap.tga"
+    generateTexture2DMipmap altMap
+
     shader :: CompiledShader os (ViewPort, (Buffer os (B Word32), PrimitiveArray Triangles (B4 Float, B3 Float)))  <- compileShader $ do
 
         (projectionMat, cameraMat, cameraPos) <- getUniform (const (projectionBuffer, 0))
@@ -828,6 +825,8 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
         fog :: FogS F <- getUniform (const (fogBuffer, 0))
         sun :: DirectionLightS F <- getUniform (const (sunBuffer, 0))
 
+        altMapSampler <- newSampler2D (const (altMap, SamplerFilter Linear Linear Linear (Just 4), (pure Repeat, undefined)))
+
         let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
         fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions ps' <&> withRasterizedInfo (\(po, n, cp) ri ->
                 let lightingContext =
@@ -837,10 +836,12 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
                         , 0.02 -- material specular intensity
                         , 8 -- material specular power
                         )
-                    material = point wheat
+                    -- material = point wheat
                     p = po ^. _xyz
                     o = po ^. _w
-                    m = material `scalePoint` saturate (1 - o)
+                    uv = V2 (p^. _x / 1204) (p^. _z / 64 + 32)
+                    material = sample2D altMapSampler SampleAuto Nothing Nothing uv
+                    m = point $ material ^* saturate (1 - o)
                     c = getSunlight undefined n Nothing p m 1 lightingContext
                 in  (c, rasterizedFragCoord ri ^. _z))
 
@@ -1083,6 +1084,7 @@ generateIndexedBlocks window = do
         -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [0], y <- [0], z <- [0] ]
         -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-3 .. 2], y <- [-3 .. 2], z <- [-1 .. 2] ]
         offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-6 .. 5], y <- [-6 .. 5], z <- [-4 .. 3] ]
+        -- offsets = [ fromIntegral . (* blockSize) <$> V3 x y z | x <- [-8 .. 7], y <- [-8 .. 7], z <- [-4 .. 3] ]
 
     offsetBuffer :: Buffer os (Uniform (B3 Float)) <- newBuffer 1
     densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure (blockSize + densityMargin * 2 + 1)) 1
