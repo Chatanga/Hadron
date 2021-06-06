@@ -790,10 +790,8 @@ getSunlight shadowSample normal shadowCoord renderContextSpacePosition material 
         color = point (sunContribution ^* occlusion)
 
         -- Add fog.
-        {-
         fogDistance = norm $ camPos - renderContextSpacePosition
         color' = applyFog fog color (fogDistance * 0.02)
-        -}
 
     in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
 
