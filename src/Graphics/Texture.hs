@@ -5,6 +5,7 @@ module Graphics.Texture
     , saveDepthTexture
     , saveTexture
     , generateNoiseTexture
+    , generate2DNoiseTexture
     , generate3DNoiseTexture
     ) where
 
@@ -93,6 +94,15 @@ generateNoiseTexture (width, height) = do
         return (V3 (x * 2 - 1) (y * 2 - 1) 0)
     let size = V2 width height
     texture <- newTexture2D' "2D noise" RGB16F size 1 -- maxBound
+    writeTexture2D texture 0 0 size noise
+    return texture
+
+generate2DNoiseTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => (Int, Int) -> ContextT ctx os m (Texture2D os (Format RFloat))
+generate2DNoiseTexture (width, height) = do
+    noise <- liftIO $ replicateM (width * height) $ do
+        runRandomIO $ (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: IO Float
+    let size = V2 width height
+    texture <- newTexture2D' "2D noise" R16F size 1
     writeTexture2D texture 0 0 size noise
     return texture
 

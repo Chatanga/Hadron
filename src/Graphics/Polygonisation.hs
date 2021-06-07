@@ -216,8 +216,8 @@ createGenerateBlockRenderer1 window offsetBuffer densityTexture = do
                 where
                     getFloatDensity :: V3 VFloat -> VFloat
                     getFloatDensity v =
-                        let ndc = (v + pure densityMargin) / (blockSize + densityMargin * 2 + 1)
-                        in  sample3D floatDensitySampler (SampleLod 0) Nothing Nothing ndc
+                        let uv = (v + pure densityMargin + pure 0.5) / (blockSize + densityMargin * 2 + 1)
+                        in  sample3D floatDensitySampler (SampleLod 0) Nothing Nothing uv
 
                     getDensity :: V3 VInt -> VFloat
                     getDensity = texelFetch3D densitySampler (pure 0) 0 . (+ pure densityMargin)
@@ -369,8 +369,8 @@ createGenerateBlockRenderer2 window offsetBuffer densityTexture = do
 
                     getFloatDensity :: V3 VFloat -> VFloat
                     getFloatDensity v =
-                        let ndc = (v + pure densityMargin) / (blockSize + densityMargin * 2 + 1)
-                        in  sample3D floatDensitySampler (SampleLod 0) Nothing Nothing ndc
+                        let uv = (v + pure densityMargin + pure 0.5) / (blockSize + densityMargin * 2 + 1)
+                        in  sample3D floatDensitySampler (SampleLod 0) Nothing Nothing uv
 
                     getDensity :: V3 VInt -> VFloat
                     getDensity = texelFetch3D densitySampler (pure 0) 0 . (+ pure densityMargin)
@@ -457,7 +457,7 @@ createGenerateBlockRenderer3 window offsetBuffer densityTexture noiseTextures = 
             makeMarks (Point p) = marks
                 where
                     getDensity :: V3 VInt -> VFloat
-                    getDensity = texelFetch3D densitySampler (pure 0) 0 . (+ V3 densityMargin densityMargin densityMargin)
+                    getDensity = texelFetch3D densitySampler (pure 0) 0 . (+ pure densityMargin)
 
                     densities :: [VFloat]
                     densities = map (getDensity . (p +)) cube
@@ -541,6 +541,7 @@ createGenerateBlockRenderer3 window offsetBuffer densityTexture noiseTextures = 
         noiseSamplers <- forM noiseTextures $ \t -> newSampler3D (const (t, filterMode, edgeMode))
 
         -- This sampler must be created before the densitySampler. Why?
+        -- floatDensitySampler <- newSampler3D (const (densityTexture, SamplerFilter Linear Linear Linear Nothing, (pure ClampToEdge, undefined)))
         floatDensitySampler <- newSampler3D (const (densityTexture, SamplerFilter Linear Linear Linear (Just 4), (pure ClampToEdge, undefined)))
 
         densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
@@ -557,12 +558,12 @@ createGenerateBlockRenderer3 window offsetBuffer densityTexture noiseTextures = 
 
                     getFloatDensity :: V3 VFloat -> VFloat
                     getFloatDensity v =
-                        let ndc = (v + densityMargin) / (blockSize + densityMargin * 2 + 1)
-                        in  sample3D floatDensitySampler (SampleLod 0) Nothing Nothing ndc
+                        let uv = (v + pure densityMargin + pure 0.5) / (blockSize + densityMargin * 2 + 1)
+                        in  sample3D floatDensitySampler (SampleLod 0) Nothing Nothing uv
 
                     -- Long range implied.
                     calculateFloatDensity :: V3 VFloat -> VFloat
-                    calculateFloatDensity = calculateDensity 5 noiseSamplers offset
+                    calculateFloatDensity v = calculateDensity 6 noiseSamplers offset (v + V3 0.5 0.5 0.0) -- TODO Investigate (layered texture?).
 
                     getDensity :: V3 VInt -> VFloat
                     getDensity = texelFetch3D densitySampler (pure 0) 0 . (+ pure densityMargin)
@@ -575,7 +576,7 @@ createGenerateBlockRenderer3 window offsetBuffer densityTexture noiseTextures = 
 
                     getNormal :: V3 VFloat -> V3 VFloat
                     getNormal v = normal where
-                        sample dv = getFloatDensity (v + dv)
+                        sample dv = getFloatDensity (v + dv + pure 0.5)
                         grad = V3
                             (sample (V3 1 0 0) - sample (V3 (-1) 0 0))
                             (sample (V3 0 1 0) - sample (V3 0 (-1) 0))
@@ -591,9 +592,9 @@ createGenerateBlockRenderer3 window offsetBuffer densityTexture noiseTextures = 
                             visibility = forN (0, rayCount) 0 (\ray visibility ->
                                 let dir = getRayDir ray
                                     shortRangeRayVisibility = forN (1, 4) 1 (\step rayVisibility ->
-                                        rayVisibility * saturate (getFloatDensity (v + V3 0.5 0.5 0.5 + dir ^* toFloat step) * 999)) -- 8
+                                        rayVisibility * saturate (getFloatDensity (v + dir ^* toFloat step) * 999)) -- 8
                                     longRangeRayVisibility = forN (1, 4) 1 (\step rayVisibility ->
-                                        rayVisibility * saturate (calculateFloatDensity (v + V3 0.5 0.5 0.0 + dir ^* (32 * toFloat step)) * 9999)) -- 0.5
+                                        rayVisibility * saturate (calculateFloatDensity (v + dir ^* (32 * toFloat step)) * 9999)) -- 0.5
                                 in  visibility + shortRangeRayVisibility * longRangeRayVisibility
                                 )
                         in  1 - visibility / toFloat rayCount
@@ -640,10 +641,10 @@ createGenerateBlockRenderer3 window offsetBuffer densityTexture noiseTextures = 
 
         gs :: GeometryStream (Geometry Points (V3 VInt, VWord)) <- geometrize ps
         let
-            toNdc c m = (toFloat c + 0.5) / fromIntegral m * 2 - 1
+            toUV c m = (toFloat c + 0.5) / fromIntegral m * 2 - 1
             splat :: Geometry Points (V3 VInt, VWord) -> GGenerativeGeometry Points ((VPos, VInt), VWord)
             splat (Point (V3 x' y z, i)) = generativePoints
-                & emitVertexPositionAndLayer ((V4 (toNdc x' (3 * size)) (toNdc y size) 0 1, z), i)
+                & emitVertexPositionAndLayer ((V4 (toUV x' (3 * size)) (toUV y size) 0 1, z), i)
                 & endPrimitive
             gs' :: GeometryStream (GGenerativeGeometry Points ((VPos, VInt), VWord)) = splat <$> gs
 
@@ -811,6 +812,8 @@ createIndexedBlockRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, M
     ContextT ctx os m ((ViewPort, (Buffer os (B4 Float, B3 Float), Buffer os (B Word32))) -> Render os ())
 createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
 
+    noiseTexture :: Texture2D os (Format RFloat) <- generate2DNoiseTexture (16, 16)
+
     Just altMap <- loadImage "data/altmap.tga"
     generateTexture2DMipmap altMap
 
@@ -825,7 +828,8 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
         fog :: FogS F <- getUniform (const (fogBuffer, 0))
         sun :: DirectionLightS F <- getUniform (const (sunBuffer, 0))
 
-        altMapSampler <- newSampler2D (const (altMap, SamplerFilter Linear Linear Linear (Just 4), (pure Repeat, undefined)))
+        noiseSampler <- newSampler2D (const (noiseTexture, SamplerFilter Linear Linear Linear (Just 4), (pure Mirror, undefined)))
+        altMapSampler <- newSampler2D (const (altMap, SamplerFilter Linear Linear Linear (Just 4), (pure Mirror, undefined)))
 
         let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
         fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions ps' <&> withRasterizedInfo (\(po, n, cp) ri ->
@@ -836,10 +840,10 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
                         , 0.02 -- material specular intensity
                         , 8 -- material specular power
                         )
-                    -- material = point wheat
                     p = po ^. _xyz
                     o = po ^. _w
-                    uv = V2 (p^. _x / 1204) (p^. _z / 64 + 32)
+                    sample p = sample2D noiseSampler (SampleLod 0) Nothing Nothing (p / 1000)
+                    uv = V2 (sample $ p^. _xy) (p^. _z / 64 + 32)
                     material = sample2D altMapSampler SampleAuto Nothing Nothing uv
                     m = point $ material ^* saturate (1 - o)
                     c = getSunlight undefined n Nothing p m 1 lightingContext
@@ -1111,7 +1115,9 @@ generateIndexedBlocks window = do
     return $ zip blockBuffers indexBuffers
 
 -- glxinfo | egrep -i 'Currently available dedicated video memory'
-createPolygonisationRenderer :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m (RenderContext m os)
+createPolygonisationRenderer :: (MonadIO m, MonadAsyncException m) =>
+    Window os RGBAFloat Depth ->
+    ContextT GLFW.Handle os m (RenderContext m os)
 createPolygonisationRenderer window = do
     -- blockBuffers :: [Buffer os (B3 Float, B3 Float)] <- generateBlocks window
     indexedBlockBuffers :: [(Buffer os (B4 Float, B3 Float), Buffer os (B Word32))] <- generateIndexedBlocks window
@@ -1144,8 +1150,10 @@ createPolygonisationRenderer window = do
                 , createProjection bounds otherCamera
                 ]
 
+            {-
             let blocks = take (bufferLength outlineBuffer) (selectBlocks bounds (head cameras))
             writeBuffer outlineBuffer 0 blocks
+            -}
 
             render $ do
                 clearWindowColor window (point skyBlue)
@@ -1156,7 +1164,7 @@ createPolygonisationRenderer window = do
                 blockOutlineRenderer viewPort
                 frustumRenderer viewPort
                 -- blockOutlinesRenderer viewPort (length blocks)
-                gridRenderer viewPort
+                -- gridRenderer viewPort
 
             return $ RenderContext Nothing renderIt
 
