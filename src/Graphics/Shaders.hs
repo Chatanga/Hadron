@@ -791,9 +791,9 @@ getSunlight shadowSample normal shadowCoord renderContextSpacePosition material 
 
         -- Add fog.
         fogDistance = norm $ camPos - renderContextSpacePosition
-        color' = applyFog fog color (fogDistance * 0.02)
+        color' = applyFog fog color fogDistance
 
-    in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color
+    in  ifThenElse' (material^._w <* 1) (V4 0.5 0.5 0.5 1) color'
 
 getLight :: (V2 FFloat -> ColorSample F Depth)
     -> V3 FFloat
@@ -825,7 +825,7 @@ getLight shadowSample normal renderContextSpacePosition material occlusion light
 
 getFogFactor :: FogS x -> S x Float -> S x Float
 getFogFactor fog fogDistance =
-    let fogEquation = FogExp
+    let fogEquation = FogExp2
         factor = case fogEquation of
             FogLinear -> (fogEndS fog - fogDistance) / (fogEndS fog - fogStartS fog)
             FogExp -> exp (-fogDensityS fog * fogDistance)

@@ -74,7 +74,7 @@ createWorld window = do
         -- (DirectionLight (V3 1.0 0.8 0.3 ^* 0.8) (- signorm (V3 20 5 15)) 0.1)
         (DirectionLight (V3 1.0 1.0 0.8) (- signorm (V3 20 5 15)) 0.4)
         [
-            ("primary-camera", Camera (V3 10 10 10) (pi/4) (pi*5/4) (pi/3) 10 500),
+            ("primary-camera", Camera (V3 10 10 10) (pi/4) (pi*5/4) (pi/4) 10 1000),
             ("secondary-camera", Camera (V3 100 100 100) (pi/4) (pi*5/4) (pi/3) 50 5000)
         ]
         0
