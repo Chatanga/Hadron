@@ -29,11 +29,14 @@ dependencies:
 - parallel
 - rosezipper == 0.1
 - exception-transformers
+- deque
+- deepseq
 
 executables:
   Hadron:
     source-dirs:         src
     main:                Main.hs
     ghc-options:
+    - -O2
     - -j4
     - -threaded

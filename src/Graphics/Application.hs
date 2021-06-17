@@ -95,7 +95,7 @@ animateUI frameDuration ui = do
         let (_, (w, h)) = viewLocalBounds view
             size = (fromIntegral w, fromIntegral h)
         c <- case viewContent view of
-            Just scene -> Just <$> sceneAnimate scene size frameDuration
+            Just scene -> Just <$!> sceneAnimate scene size frameDuration
             Nothing -> return Nothing
         return view{ viewContent = c }
     return $ ui{ uiRoot = root' }
@@ -150,7 +150,7 @@ runApplication name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVe
     eventQueueRef <- liftIO $ newIORef []
     let
         -- Queue an event for later processing in the proper context.
-        pushEvent event = modifyIORef eventQueueRef (event :)
+        pushEvent event = modifyIORef' eventQueueRef (event :)
         -- Process an event in the proper context.
         doProcessEvent event = do
             ui <- liftIO $ readIORef uiRef
@@ -167,18 +167,19 @@ runApplication name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVe
         pushEvent (EventCursorPos x y)
 
     -- Run the main loop.
-    mainLoop window 0 (0, Nothing, Nothing) currentWorld uiRef quitRef eventQueueRef doProcessEvent
+    mainLoop window 0 (0, Nothing, Nothing) (V2 0 0) currentWorld uiRef quitRef eventQueueRef doProcessEvent
 
 mainLoop :: Window os f Depth
     -> Int
     -> (Int, Maybe Double, Maybe Double)
+    -> V2 Int
     -> IORef (World os)
     -> IORef (ScenicUI IO os)
     -> IORef Bool
     -> IORef [Event]
     -> (Event -> ContextT GLFW.Handle os IO ())
     -> ContextT GLFW.Handle os IO ()
-mainLoop window counter (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueueRef doProcessEvent = do
+mainLoop window counter (frameCount, mt0, mt1) bfSize worldRef uiRef quitRef eventQueueRef doProcessEvent = do
 
     -- Calculate the FPS.
     mt2 <- liftIO GLFW.getTime
@@ -191,8 +192,8 @@ mainLoop window counter (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueue
         else
             return (frameCount + 1, mt0, mt2)
 
-    (V2 w h) <- getFrameBufferSize window
-    liftIO $ modifyIORef uiRef (layout (w, h))
+    bfSize'@(V2 w h) <- getFrameBufferSize window
+    when (bfSize /= bfSize') $ liftIO $ modifyIORef' uiRef (layout (w, h))
 
     -- Process the event queue.
     eventQueue <- liftIO $ readIORef eventQueueRef
@@ -217,4 +218,4 @@ mainLoop window counter (frameCount, mt0, mt1) worldRef uiRef quitRef eventQueue
     shouldQuit <- (||) <$> liftIO (readIORef quitRef) <*> pure shouldClose
     if shouldQuit
         then liftIO $ infoM "Hadron" "Exiting"
-        else mainLoop window (counter+1) timing worldRef uiRef quitRef eventQueueRef doProcessEvent
+        else mainLoop window (counter+1) timing bfSize' worldRef uiRef quitRef eventQueueRef doProcessEvent

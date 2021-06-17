@@ -4,7 +4,7 @@ packages:
 - '.'
 - '../GPipe-Core/GPipe-Core'
 - '../GPipe-GLFW/GPipe-GLFW'
-- '../dear-imgui.hs'
+#- '../dear-imgui.hs'
 
 #flags:
 #  dear-imgui:

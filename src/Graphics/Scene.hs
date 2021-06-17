@@ -13,6 +13,7 @@ import Control.Monad.Exception
 
 import Data.Fixed
 import Data.IORef
+import Data.List
 import Data.Maybe
 import qualified Data.Map as Map
 import Graphics.GPipe
@@ -34,9 +35,9 @@ import Graphics.World
 data SceneContext m os = SceneContext
     { sceneContextCameraName :: String
     , sceneContextCameraMoves :: !(Map.Map Move Double)
-    , sceneContextCursorPosition :: (Float, Float)
-    , sceneContextDrag :: Maybe (Float, Float)
-    , sceneContextRenderContext :: RenderContext m os
+    , sceneContextCursorPosition :: !(Float, Float)
+    , sceneContextDrag :: !(Maybe (Float, Float))
+    , sceneContextRenderContext :: !(RenderContext m os)
     }
 
 data Move
@@ -49,9 +50,9 @@ data Move
     deriving (Eq, Ord, Show)
 
 data Scene m os = Scene
-    { sceneDisplay :: MonadIO m => ((Int, Int), (Int, Int)) -> ContextT GLFW.Handle os m ()
-    , sceneAnimate :: MonadIO m => (Float, Float) -> Double -> ContextT GLFW.Handle os m (Scene m os)
-    , sceneManipulate :: MonadIO m => (Float, Float) -> Event -> ContextT GLFW.Handle os m (Maybe (Scene m os)) -- ^ nothing => exit
+    { sceneDisplay :: !(MonadIO m => ((Int, Int), (Int, Int)) -> ContextT GLFW.Handle os m ())
+    , sceneAnimate :: !(MonadIO m => (Float, Float) -> Double -> ContextT GLFW.Handle os m (Scene m os))
+    , sceneManipulate :: !(MonadIO m => (Float, Float) -> Event -> ContextT GLFW.Handle os m (Maybe (Scene m os))) -- ^ nothing => exit
     }
 
 createScene :: (MonadIO m, MonadAsyncException m) => Window os f Depth -> IORef (World os) -> IORef (SceneContext m os) -> Scene m os
@@ -130,7 +131,7 @@ animate window worldRef contextRef (_, height) timeDelta = do
                 applyMove p (m, dp) = case Map.lookup m moves of
                     Just i -> p + dp * realToFrac (timeDelta * i)
                     Nothing -> p
-                position = foldl applyMove (cameraPosition camera) keyMoves
+                position = foldl' applyMove (cameraPosition camera) keyMoves
                 (alt, az) = (cameraAltitude camera, cameraAzimuth camera)
                 (alt', az') = case sceneContextDrag context of
                     Nothing -> (alt, az)

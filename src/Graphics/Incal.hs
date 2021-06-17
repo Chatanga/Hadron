@@ -65,7 +65,8 @@ createIncalRenderer window = do
 
             return $ RenderContext (Just frameBufferGroup) renderAction
 
-        fog = Fog (V4 0.5 0.5 0.5 1) 10 100 0.2
+        -- fog = Fog (V4 0.5 0.5 0.5 1) 10 100 0.2
+        fog = Fog (point skyBlue) 100 1000 0.002
 
         renderShadow bounds@((x, y), _) frameBufferGroup camera sun buffers = do
             let

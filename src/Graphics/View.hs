@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveAnyClass #-}
+
 module Graphics.View
     ( Event(..)
     , EventAction(..)
@@ -25,10 +27,10 @@ import qualified Graphics.GPipe.Context.GLFW as GLFW
 ------------------------------------------------------------------------------------------------------------------------
 
 data UI m a = UI
-    { uiRoot :: Tree (View m a) -- ^ The UI content as a tree of views.
-    , uiCursorPos :: Maybe (Double, Double) -- ^ Latest cursor position.
-    , uiMouseDrag :: Maybe (Double, Double) -- ^ Latest drag position.
-    , uiTerminated :: Bool -- Has the UI been terminated by an event?
+    { uiRoot :: !(Tree (View m a)) -- ^ The UI content as a tree of views.
+    , uiCursorPos :: !(Maybe (Double, Double)) -- ^ Latest cursor position.
+    , uiMouseDrag :: !(Maybe (Double, Double)) -- ^ Latest drag position.
+    , uiTerminated :: !Bool -- Has the UI been terminated by an event?
     } deriving Show
 
 createUI :: Tree (View m a) -> UI m a
@@ -37,14 +39,14 @@ createUI root = UI root Nothing Nothing False
 type Bounds = ((Int, Int), (Int, Int))
 
 data View m a = View
-    { viewLocalBounds :: Bounds
-    , viewContent :: a
-    , viewHasFocus :: Bool
-    , viewHasCursor :: Bool
-    , viewIsDragOrigin :: Bool
-    , viewEventQueue :: [Event]
-    , viewHandleEvent :: ViewHandleEvent m a
-    , viewLayout :: Layout m a
+    { viewLocalBounds :: !Bounds
+    , viewContent :: !a
+    , viewHasFocus :: !Bool
+    , viewHasCursor :: !Bool
+    , viewIsDragOrigin :: !Bool
+    , viewEventQueue :: ![Event]
+    , viewHandleEvent :: !(ViewHandleEvent m a)
+    , viewLayout :: !(Layout m a)
     }
 
 createView :: Monad m => a -> View m a
@@ -273,6 +275,8 @@ bubbleUpCursorEntry loc = let view = getLabel loc in
                 BubbleUp -> case parent loc of
                     Nothing -> return loc
                     Just p -> bubbleUpCursorEntry p
+                Terminate ->
+                    error "Unexpected EventAction Terminate!"
 
 bubbleUp :: Monad m
     => (TreeLoc (View m a) -> m (EventAction m a))

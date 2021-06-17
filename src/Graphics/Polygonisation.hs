@@ -13,16 +13,20 @@ import Control.Monad ( forM_, replicateM, forM, foldM )
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception
 import Data.Bits
+import Data.Bifunctor (second)
+import qualified Deque.Strict as Deque
 import Data.Int (Int8, Int32)
 import Data.List ((\\), partition, delete, foldl')
 import Data.Maybe
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import Data.Word (Word8, Word16, Word32)
+import GHC.Exts
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 import qualified Codec.Picture as Juicy
 import qualified Codec.Picture.Types as Juicy
 import System.Log.Logger
+import Text.Printf
 
 import Common.Debug
 import qualified Common.Random as Random
@@ -1190,11 +1194,19 @@ createPolygonisationRenderer window = do
     let poolSize = 1000
         blockBufferSize = blockSize^3 * 3
         indexBufferSize = blockBufferSize * maxCellTriangleCount
+        vMemSize = blockBufferSize * 7 * 4 + indexBufferSize * 4
+
+        formatBigNumber d =
+            let (q, r) = d `quotRem` 1000
+            in  if q > 0
+                then formatBigNumber q ++ "," ++ printf "%03d" r
+                else printf "%d" r
+
+    liftIO $ infoM "Hadron" $ show poolSize ++ " allocated blocks (" ++ formatBigNumber vMemSize ++ " bytes)"
 
     pool :: [(Buffer os (B4 Float, B3 Float), Buffer os (B Word32))] <- replicateM poolSize $ (,) <$>
         newBuffer blockBufferSize <*>
         newBuffer indexBufferSize
-    let blockCache = newCache pool
 
     offsetAndScaleBuffer :: Buffer os (Uniform (B3 Float, B Float)) <- newBuffer 1
     densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure (blockSize + densityMargin * 2 + 1)) 1
@@ -1239,13 +1251,10 @@ createPolygonisationRenderer window = do
                     size <- fillIndexedBlock (scale / blockSize) offset blockBuffer indexBuffer
                     return $ if size > 0 then Just (blockBuffer, indexBuffer) else Nothing
 
-            (cache', bb) <- foldM
-                (\(c, ds) k -> cacheLookup gen c k >>= \(c', d) -> return (c', maybe ds (\d -> (k, d):ds) d))
+            (cache', (blocks', indexedBlockBuffers)) <- second unzip <$> foldM
+                (\(c, ds) k -> cacheLookup gen c k >>= \(c', d) -> return (c', maybe ds (\d -> (k, d) : ds) d))
                 (cache, [])
                 blocks
-
-            let blocks' = map fst bb
-                indexedBlockBuffers = map snd bb
 
             -- writeBuffer outlineBuffer 0 blocks'
 
@@ -1253,7 +1262,8 @@ createPolygonisationRenderer window = do
                 clearWindowColor window (point skyBlue)
                 clearWindowDepth window 1
                 let viewPort = ViewPort (V2 x y) (V2 w h)
-                forM_ indexedBlockBuffers $ \indexedBlockBuffer -> indexedBlockRenderer (viewPort, indexedBlockBuffer)
+                forM_ indexedBlockBuffers $ \indexedBlockBuffer ->
+                    indexedBlockRenderer (viewPort, indexedBlockBuffer)
                 -- blockOutlineRenderer viewPort
                 frustumRenderer viewPort
                 -- blockOutlinesRenderer viewPort (length blocks')
@@ -1261,38 +1271,40 @@ createPolygonisationRenderer window = do
 
             return $ RenderContext Nothing (renderIt cache')
 
-    return (RenderContext Nothing (renderIt blockCache))
+    return $ RenderContext Nothing (renderIt (newCache pool))
 
 data Cache k v = Cache
     { cacheMap :: !(Map.Map k (Maybe v))
-    , cacheInnerKeys :: ![k]
+    , cacheInnerKeys :: !(Deque.Deque k)
     , cacheOuterValues :: ![v]
     }
 
 newCache :: [v] -> Cache k v
-newCache = Cache Map.empty []
+newCache = Cache Map.empty (fromList [])
 
 cacheLookup :: (Ord k, Monad m) => (k -> v -> m (Maybe v)) -> Cache k v -> k -> m (Cache k v,  Maybe v)
 cacheLookup f cache@(Cache m iks pool) k =
     case Map.lookup k m of
         Just v -> return (cache, v)
-        Nothing -> if null pool
-            then if null iks
-                then return (cache, Nothing)
+        Nothing ->
+            if null pool
+                then if null iks
+                    then return (cache, Nothing)
+                    else do
+                        let (ksNothing, ksJust) = Deque.span (\k -> (isNothing . fromJust) (Map.lookup k m)) iks
+                            Just (k', ks) = Deque.uncons ksJust
+                            v' = fromJust . fromJust $ Map.lookup k' m
+                        v <- f k v'
+                        let pool' = [v' | isNothing v] -- A HLint suggestion, but rather hermetic I think.
+                            m' = Map.insert k v $ foldl' (flip Map.delete) m (k' : toList ksNothing)
+                            iks' = Deque.snoc k ks
+                        return (Cache m' iks' pool', v)
                 else do
-                    let (ksOld, k':ks) = break (\k -> (isJust. fromJust) (Map.lookup k m)) iks
-                        v' = fromJust . fromJust $ Map.lookup k' m
-                    v <- f k v'
-                    let pool' = [v' | isNothing v] -- A HLint suggestion, but rather hermetic I think.
-                        m' = Map.insert k v $ foldl' (flip Map.delete) m (k':ksOld)
-                        iks' = ks ++ [k]
+                    v <- f k (head pool)
+                    let pool' = if isNothing v then pool else tail pool
+                        m' = Map.insert k v m
+                        iks' = Deque.snoc k iks
                     return (Cache m' iks' pool', v)
-            else do
-                v <- f k (head pool)
-                let pool' = if isNothing v then pool else tail pool
-                    m' = Map.insert k v m
-                    iks' = iks ++ [k]
-                return (Cache m' iks' pool', v)
 
 selectBlocks :: ((Int, Int), (Int, Int)) -> Camera -> [(Float, V3 Float)]
 selectBlocks bounds camera = allBlocks where

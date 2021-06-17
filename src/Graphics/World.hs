@@ -164,3 +164,4 @@ calculateTriangleNormal p1 p2 p3 = signorm $ cross (p2 ^-^ p1) (p3 ^-^ p1)
 extractNormals :: Floating a => [V3 a] -> [V3 a]
 extractNormals [] = []
 extractNormals (p1:p2:p3:ps) = let n = calculateTriangleNormal p1 p2 p3 in [n, n, n] ++ extractNormals ps
+extractNormals _ = error "Normal array size is not a multiple of 3!"
