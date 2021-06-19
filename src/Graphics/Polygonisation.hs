@@ -1256,7 +1256,7 @@ createPolygonisationRenderer window = do
                 (cache, [])
                 blocks
 
-            -- writeBuffer outlineBuffer 0 blocks'
+            writeBuffer outlineBuffer 0 blocks'
 
             render $ do
                 clearWindowColor window (point skyBlue)
@@ -1266,7 +1266,7 @@ createPolygonisationRenderer window = do
                     indexedBlockRenderer (viewPort, indexedBlockBuffer)
                 -- blockOutlineRenderer viewPort
                 frustumRenderer viewPort
-                -- blockOutlinesRenderer viewPort (length blocks')
+                blockOutlinesRenderer viewPort (length blocks')
                 -- gridRenderer viewPort
 
             return $ RenderContext Nothing (renderIt cache')

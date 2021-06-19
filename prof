@@ -1,0 +1,3 @@
+#! /bin/bash
+stack --profile exec -- Hadron +RTS -p -hy -L80 -s
+hp2ps -e8in -c Hadron.hp

@@ -1,0 +1,7 @@
+#! /bin/bash
+exe=Hadron
+for f in $exe.aux $exe.hp $exe.prof $exe.ps ; do
+    if [ -f $f ] ; then
+        rm -v $f
+    fi
+done

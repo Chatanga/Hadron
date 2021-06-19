@@ -1,4 +1,4 @@
-{-# language RankNTypes #-}
+{-# language RankNTypes, BangPatterns #-}
 
 module Graphics.Scene
     ( Scene(..)
@@ -10,7 +10,7 @@ module Graphics.Scene
 
 import Control.Monad.State
 import Control.Monad.Exception
-
+import Control.Exception
 import Data.Fixed
 import Data.IORef
 import Data.List
@@ -20,6 +20,7 @@ import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
 
+import Common.Debug
 import Common.Random
 import Graphics.CubeRoom
 import Graphics.Geometry
@@ -33,7 +34,7 @@ import Graphics.World
 ------------------------------------------------------------------------------------------------------------------------
 
 data SceneContext m os = SceneContext
-    { sceneContextCameraName :: String
+    { sceneContextCameraName :: !String
     , sceneContextCameraMoves :: !(Map.Map Move Double)
     , sceneContextCursorPosition :: !(Float, Float)
     , sceneContextDrag :: !(Maybe (Float, Float))
@@ -145,8 +146,14 @@ animate window worldRef contextRef (_, height) timeDelta = do
         cameras = for (worldCameras world) $ \(n, c) ->
             if n == sceneContextCameraName context then (n, moveCamera c) else (n, c)
 
-    liftIO $ writeIORef worldRef world{ worldCameras = cameras }
-    liftIO $ writeIORef contextRef context{ sceneContextDrag = Nothing }
+        -- https://ro-che.info/articles/2015-05-28-force-list
+        forceElements :: [a] -> ()
+        forceElements = foldr seq ()
+
+    liftIO $ do
+        evaluate (forceElements cameras)
+        writeIORef worldRef world{ worldCameras = cameras}
+        writeIORef contextRef context{ sceneContextDrag = Nothing }
     return $ createScene window worldRef contextRef
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -189,8 +196,14 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
     | k == GLFW.Key'Tab && ks == GLFW.KeyState'Pressed = do
         world <- liftIO $ readIORef worldRef
         context <- liftIO $ readIORef contextRef
-        let nextCameraName = dropWhile (/= sceneContextCameraName context) (cycle (map fst (worldCameras world))) !! 1
-        liftIO $ writeIORef contextRef context{ sceneContextCameraName = nextCameraName }
+        let cameraName = sceneContextCameraName context
+            nextCameraName = do
+                let names = map fst (worldCameras world)
+                i <- elemIndex cameraName names
+                return $ cycle names !! (i + 1)
+        case nextCameraName of
+            Just name -> liftIO $ writeIORef contextRef context{ sceneContextCameraName = name }
+            Nothing -> return ()
         return $ Just (createScene window worldRef contextRef)
 
     -- Move the camera using WASD keys (note that the keyboard layout is not taken into account).
