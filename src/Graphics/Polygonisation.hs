@@ -594,6 +594,7 @@ createGenerateBlockRenderer3 window offsetAndScaleBuffer densityTexture noiseTex
                     getRayDir :: VInt -> V3 VFloat
                     getRayDir = texelFetch1D raySampler (pure 0) 0
 
+                    -- TODO Take scale into account.
                     calculateOcclusion :: V3 VFloat -> VFloat
                     calculateOcclusion v =
                         let rayCount = fromIntegral (length poissonOnSphere)
@@ -1061,7 +1062,10 @@ createFrustumRenderer window projectionBuffer = do
             <*> newVertexArray frustumBuffer
         shader (viewPort, frustum)
 
-generateBlocks :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> Float -> ContextT GLFW.Handle os m [Buffer os (B3 Float, B3 Float)]
+generateBlocks :: (MonadIO m, MonadAsyncException m) =>
+    Window os RGBAFloat Depth ->
+    Float ->
+    ContextT GLFW.Handle os m [Buffer os (B3 Float, B3 Float)]
 generateBlocks window scale = do
     let blockBufferSize = blockSize^3 * maxCellTriangleCount * 3
 
@@ -1093,7 +1097,10 @@ generateBlocks window scale = do
 
     return blockBuffers
 
-generateIndexedBlocks :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> Float -> ContextT GLFW.Handle os m [(Buffer os (B4 Float, B3 Float), Buffer os (B Word32))]
+generateIndexedBlocks :: (MonadIO m, MonadAsyncException m) =>
+    Window os RGBAFloat Depth ->
+    Float ->
+    ContextT GLFW.Handle os m [(Buffer os (B4 Float, B3 Float), Buffer os (B Word32))]
 generateIndexedBlocks window scale = do
     let blockBufferSize = blockSize^3 * 3
         indexBufferSize = blockBufferSize * maxCellTriangleCount
@@ -1256,7 +1263,7 @@ createPolygonisationRenderer window = do
                 (cache, [])
                 blocks
 
-            writeBuffer outlineBuffer 0 blocks'
+            -- writeBuffer outlineBuffer 0 blocks'
 
             render $ do
                 clearWindowColor window (point skyBlue)
@@ -1265,8 +1272,8 @@ createPolygonisationRenderer window = do
                 forM_ indexedBlockBuffers $ \indexedBlockBuffer ->
                     indexedBlockRenderer (viewPort, indexedBlockBuffer)
                 -- blockOutlineRenderer viewPort
-                frustumRenderer viewPort
-                blockOutlinesRenderer viewPort (length blocks')
+                -- frustumRenderer viewPort
+                -- blockOutlinesRenderer viewPort (length blocks')
                 -- gridRenderer viewPort
 
             return $ RenderContext Nothing (renderIt cache')
