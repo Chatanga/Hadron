@@ -5,7 +5,7 @@ Hadron
 
 This toy project currently aims at implementing the procedural terrain generation described in
 [GPU Gems 3](https://developer.nvidia.com/gpugems/gpugems3/part-i-geometry/chapter-1-generating-complex-procedural-terrains-using-gpu "Chapter 1. Generating Complex Procedural Terrains Using the GPU").
-It's a work in progress which relies on [an experimental version of GPipe](https://github.com/Chatanga/GPipe-Core/tree/transform-feedback)
+It's a work in progress which relies on [an experimental version of GPipe](https://github.com/Chatanga/GPipe-Core/tree/experimental)
 to handle missing features such as geometry shaders and transform feedbacks.
 
 **Controls:**
