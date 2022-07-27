@@ -222,7 +222,7 @@ createCubeRoomRenderer window = do
     cornersRenderer <- createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstanceBuffer
     blocksRenderer <- createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer
 
-    writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.2]
+    writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.02]
 
     let renderIt _ bounds camera _ sun lights buffers normalBuffers = do
 
