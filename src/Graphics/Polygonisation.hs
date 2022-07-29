@@ -78,6 +78,7 @@ ndcFrustum =
 blockSize :: Num a => a
 blockSize = 32
 
+-- Should be even for upscale adapting purposes.
 densityMargin :: Num a => a
 densityMargin = 6
 
@@ -92,17 +93,18 @@ calculateDensity :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Floa
 calculateDensity octaveCount noiseSamplers offset p = density where
     sample i p a b = sample3D (cycle noiseSamplers !! i) (SampleLod 0) Nothing Nothing (p * a / 256) * b
     p' = p + offset
-    base = p'^._z / 16
+    base = p'^._z / 8
     -- base = (minB (norm p') (norm (p' + V3 40 0 0)) - 40) / 8
-    -- base = (norm p' - 40) / 8
+    -- base = (norm p' - 16) / 8
+    -- base = (p'^._z + 1) / 16 + sin(p'^._x / 4 + p'^._y / 4) / 4
     density = base + sum (zipWith (\i (a, b) -> sample i p' a b) [0..octaveCount-1]
         [ (0.10, 6.40)
         , (0.20, 3.20)
         , (0.40, 1.60)
         , (0.80, 0.80)
         , (1.60, 0.40)
-        , (3.20, 0.20)
-        , (6.40, 0.10)
+        , (2.20, 0.20)
+        , (4.40, 0.10)
         ])
 
 calculateDensity' :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Float) -> V3 (S x Float) -> S x Float
@@ -136,7 +138,7 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
 
         neighbourUpscaleSampler <- newSampler3D (const (neighbourUpscaleTexture, SamplerNearest, (pure ClampToEdge, undefined)))
 
-        let filterMode = SamplerFilter Linear Linear Linear (Just 4)
+        let filterMode = SamplerFilter Linear Linear Linear Nothing -- (Just 4)
             edgeMode = (pure Repeat, undefined)
         noiseSamplers <- forM noiseTextures $ \t -> newSampler3D (const (t, filterMode, edgeMode))
 
@@ -161,16 +163,23 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
 
         let fs' = getDensity' <$> fs
 
-            getDensity :: V3 (S F Float) -> S F Float
-            getDensity = calculateDensity 7 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^)
+            -- Pixel centers are located at half-pixel centers and need to be shifted (z is fine).
+            -- (cf. https://registry.khronos.org/OpenGL-Refpages/gl4/html/gl_FragCoord.xhtml)
+            getDensityOld :: V3 (S F Float) -> S F Float
+            getDensityOld = calculateDensity 7 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^) . (\p -> p - V3 0.5 0.5 0)
 
+            getDensity :: V3 (S F Float) -> S F Float
+            getDensity = calculateDensity 6 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^)
+
+            -- Too naive… Can't really work. It does a good, if not perfect, job on average on a random landscape,
+            -- but would occasionally make things worst (ironically when doing nothing would be perfectly fine).
             getDensity' :: V3 FFloat -> FFloat
             getDensity' p =
                 -- Pixel centers are located at half-pixel centers and need to be shifted (z is fine).
                 -- (cf. https://registry.khronos.org/OpenGL-Refpages/gl4/html/gl_FragCoord.xhtml)
                 let V3 x y z = p - V3 0.5 0.5 0
                     upscale = texelFetch3D neighbourUpscaleSampler (pure 0) 0 (toUnitaryVector (V3 x y z))
-                    split c = let m = mod'' c 2 in  ifThenElse' (m <* 0.5) (c, c) (c - 1, c + 1)
+                    split c = let m = mod'' c 2 in ifThenElse' (m <* 0.5) (c, c) (c - 1, c + 1)
                     (x1, x2) = split x
                     (y1, y2) = split y
                     (z1, z2) = split z
@@ -202,7 +211,7 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
 
             toUnitaryVector :: V3 FFloat -> V3 FInt
             toUnitaryVector (V3 x y z) =
-                let toUnitary c = ifThenElse' (c <* densityMargin + 0.5) 0 (ifThenElse' (c >* densityMargin + blockSize - 0.5) 2 1)
+                let toUnitary c = ifThenElse' (c <* densityMargin + 0.5) 0 (ifThenElse' (c >* densityTextureSize - densityMargin - 0.5) 2 1)
                 in  V3 (toUnitary x) (toUnitary y) (toUnitary z)
 
         draw (const NoBlending) fs' $
@@ -424,7 +433,7 @@ createGenerateBlockRenderer window offsetAndScaleBuffer densityTexture noiseText
                                 (d1, d2) = (getDensity v1, getDensity v2)
                                 a = d1 / (d1 - d2)
                             v = calculatePoint v1 v2
-                            o = calculateOcclusion v
+                            o = 0 -- calculateOcclusion v
                             n = getNormal v
                             v3plus1 (V3 x y z) w = V4 x y z w
                         in  (v3plus1 (offset + v ^* scale) o, n)
@@ -911,8 +920,10 @@ addNeighbourUpscaleToBlocks blocks = f maxScale [] blocks where
         (sameBlocks, smallerBlocks) = partition (\b -> fst b == scale) blocks
         enhance block@(s, p) =
             let c = p + pure (s / 2)
+                -- TODO Add a pass to merge upscales from faces in edges.
                 neighbourUpscales = map getNeighbourUpscale neighbourUpscaleOffsets
-                getNeighbourUpscale offset = if any (isPointInsideCube (c + offset ^* s)) biggerBlocks then 1 else 0
+                notACorner (V3 x y z) = abs x + abs y + abs z < 3 -- corner => single point with odd coordinates (no upscale)
+                getNeighbourUpscale offset = if notACorner offset && any (isPointInsideCube (c + offset ^* s)) biggerBlocks then 1 else 0
             in  (neighbourUpscales, block)
 
 {- List all visible blocks in a camera view frustum. The returned blocks are
