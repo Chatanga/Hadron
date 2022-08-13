@@ -93,7 +93,7 @@ calculateDensity :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Floa
 calculateDensity octaveCount noiseSamplers offset p = density where
     sample i p a b = sample3D (cycle noiseSamplers !! i) (SampleLod 0) Nothing Nothing (p * a / 256) * b
     p' = p + offset
-    base = p'^._z / 16
+    base = p'^._z / 32
     -- base = (minB (norm p') (norm (p' + V3 40 0 0)) - 40) / 8
     -- base = (norm p' - 16) / 8
     -- base = (p'^._z + 1) / 16 + sin(p'^._x / 4 + p'^._y / 4) / 4
@@ -433,7 +433,7 @@ createGenerateBlockRenderer window offsetAndScaleBuffer densityTexture noiseText
                                 (d1, d2) = (getDensity v1, getDensity v2)
                                 a = d1 / (d1 - d2)
                             v = calculatePoint v1 v2
-                            o = 0 -- calculateOcclusion v
+                            o = calculateOcclusion v
                             n = getNormal v
                             v3plus1 (V3 x y z) w = V4 x y z w
                         in  (v3plus1 (offset + v ^* scale) o, n)
@@ -635,7 +635,6 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
                     uv = V2 (sample $ p^. _xy) (p^. _z / 64 + 32)
                     material = sample2D altMapSampler SampleAuto Nothing Nothing uv
                     m = point $ material ^* saturate (1 - o)
-                    -- m = point 0.5
                     c = getSunlight undefined n Nothing p m 1 lightingContext
                 in  (c, rasterizedFragCoord ri ^. _z))
 
@@ -855,12 +854,12 @@ createPolygonisationRenderer window = do
     blockOutlinesRenderer <- createBlockOutlinesRenderer window projectionBuffer outlineBuffer
     gridRenderer <- createGridRenderer window projectionBuffer fogBuffer
 
-    writeBuffer fogBuffer 0 [Fog (point skyBlue) 100 1000 0.002]
-
     let renderIt cache _ bounds camera cameras sun lights _ _ gui = do
             let ((x, y), (w, h)) = bounds
                 debug = guiDebug gui
+                fogDensity = guiFogDensity gui
 
+            writeBuffer fogBuffer 0 [Fog (point skyBlue) 100 1000 fogDensity]
             writeBuffer sunBuffer 0 [sun]
 
             let otherCamera = head (filter (/= camera) cameras)
@@ -891,7 +890,7 @@ createPolygonisationRenderer window = do
                 forM_ indexedBlockBuffers $ \indexedBlockBuffer ->
                     indexedBlockRenderer (viewPort, indexedBlockBuffer)
                 when debug $ do
-                    -- frustumRenderer viewPort
+                    frustumRenderer viewPort
                     blockOutlinesRenderer viewPort (length blocks')
                     -- gridRenderer viewPort
 

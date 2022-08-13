@@ -75,8 +75,8 @@ createWorld window = do
         (DirectionLight (V3 1.0 1.0 0.8) (- signorm (V3 20 5 15)) 0.4)
         [
             ("primary-camera", Camera (V3 10 10 10) (pi/4) (pi*5/4) (pi/4) 10 1000),
---            ("secondary-camera", Camera (V3 100 100 100) (pi/4) (pi*5/4) (pi/3) 50 5000)
-            ("secondary-camera", Camera (V3 100 100 100) (pi/4) (pi*5/4) (pi/3) 1 500)
+            ("secondary-camera", Camera (V3 100 100 100) (pi/4) (pi*5/4) (pi/3) 50 5000)
+--            ("secondary-camera", Camera (V3 100 100 100) (pi/4) (pi*5/4) (pi/3) 1 500)
         ]
         0
         [incalBuffer, wallBuffer, sphereBuffer]

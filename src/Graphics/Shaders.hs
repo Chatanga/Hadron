@@ -61,6 +61,7 @@ import Common.Random
 
 data Gui = Gui
     { guiFps :: Double
+    , guiFogDensity :: Float
     , guiDebug :: Bool
     }
 
