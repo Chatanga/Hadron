@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
+{-# language FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.Incal
     ( createIncalRenderer
@@ -51,7 +51,7 @@ createIncalRenderer window = do
     compiledScreenShader <- compileShader . silenceShader $ screenShader window
     compiledNormalShader <- compileShader $ normalShader window shaderConfigUniformBuffer
 
-    let renderAction context bounds camera _ sun lights buffers normalBuffers = do
+    let renderAction context bounds camera _ sun lights buffers normalBuffers _ = do
             let (_, (w, h)) = bounds
                 size = V2 w h
             frameBufferGroup <- case renderContextFrameBufferGroup context of

@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, TypeFamilies, FlexibleContexts, TupleSections #-}
+{-# language ScopedTypeVariables, TypeFamilies, FlexibleContexts, TupleSections #-}
 
 module Graphics.MarchingCube
     ( EdgeIndice

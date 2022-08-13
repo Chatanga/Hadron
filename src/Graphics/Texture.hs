@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, FlexibleContexts, TypeFamilies, LambdaCase #-}
+{-# language ScopedTypeVariables, FlexibleContexts, TypeFamilies, LambdaCase #-}
 
 module Graphics.Texture
     ( loadImage

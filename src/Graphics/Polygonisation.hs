@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
+{-# language ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.Polygonisation
     ( createPolygonisationRenderer
@@ -93,7 +93,7 @@ calculateDensity :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Floa
 calculateDensity octaveCount noiseSamplers offset p = density where
     sample i p a b = sample3D (cycle noiseSamplers !! i) (SampleLod 0) Nothing Nothing (p * a / 256) * b
     p' = p + offset
-    base = p'^._z / 8
+    base = p'^._z / 16
     -- base = (minB (norm p') (norm (p' + V3 40 0 0)) - 40) / 8
     -- base = (norm p' - 16) / 8
     -- base = (p'^._z + 1) / 16 + sin(p'^._x / 4 + p'^._y / 4) / 4
@@ -103,8 +103,8 @@ calculateDensity octaveCount noiseSamplers offset p = density where
         , (0.40, 1.60)
         , (0.80, 0.80)
         , (1.60, 0.40)
-        , (2.20, 0.20)
-        , (4.40, 0.10)
+        , (3.20, 0.20)
+        , (6.40, 0.10)
         ])
 
 calculateDensity' :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Float) -> V3 (S x Float) -> S x Float
@@ -169,7 +169,7 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
             getDensityOld = calculateDensity 7 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^) . (\p -> p - V3 0.5 0.5 0)
 
             getDensity :: V3 (S F Float) -> S F Float
-            getDensity = calculateDensity 6 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^)
+            getDensity = calculateDensity 7 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^)
 
             -- Too naive… Can't really work. It does a good, if not perfect, job on average on a random landscape,
             -- but would occasionally make things worst (ironically when doing nothing would be perfectly fine).
@@ -812,7 +812,7 @@ createPolygonisationRenderer :: (MonadIO m, MonadAsyncException m)
     => Window os RGBAFloat Depth
     -> ContextT GLFW.Handle os m (RenderContext m os)
 createPolygonisationRenderer window = do
-    let debug = False
+    let debug = True
         poolSize = 1000
         blockBufferSize = blockSize^3 * 3
         indexBufferSize = blockBufferSize * maxCellTriangleCount
@@ -857,8 +857,9 @@ createPolygonisationRenderer window = do
 
     writeBuffer fogBuffer 0 [Fog (point skyBlue) 100 1000 0.002]
 
-    let renderIt cache _ bounds camera cameras sun lights buffers normalBuffers = do
+    let renderIt cache _ bounds camera cameras sun lights _ _ gui = do
             let ((x, y), (w, h)) = bounds
+                debug = guiDebug gui
 
             writeBuffer sunBuffer 0 [sun]
 

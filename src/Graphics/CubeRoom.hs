@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
+{-# language ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
 
 module Graphics.CubeRoom
     ( createCubeRoomRenderer
@@ -224,7 +224,7 @@ createCubeRoomRenderer window = do
 
     writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.02]
 
-    let renderIt _ bounds camera _ sun lights buffers normalBuffers = do
+    let renderIt _ bounds camera _ sun lights buffers normalBuffers _ = do
 
             writeBuffer sunBuffer 0 [sun]
 

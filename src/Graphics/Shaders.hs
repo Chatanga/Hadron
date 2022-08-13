@@ -1,7 +1,8 @@
-{-# LANGUAGE Arrows, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts, RankNTypes #-}
+{-# language Arrows, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, TypeFamilies, FlexibleContexts, RankNTypes #-}
 
 module Graphics.Shaders
-    ( DirectionLight (..), DirectionLightB (..), DirectionLightS (..)
+    ( Gui (..)
+    , DirectionLight (..), DirectionLightB (..), DirectionLightS (..)
     , PointLight (..), PointLightB (..), PointLightS (..)
     , FogEquation(..)
     , Fog(..) , FogB(..), FogS(..), applyFog
@@ -55,6 +56,13 @@ import Linear
 import Graphics.Geometry
 import Graphics.Texture
 import Common.Random
+
+------------------------------------------------------------------------------------------------------------------------
+
+data Gui = Gui
+    { guiFps :: Double
+    , guiDebug :: Bool
+    }
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -299,6 +307,7 @@ data RenderContext m os = RenderContext
         -> [PointLight]
         -> [Buffer os (B3 Float, B3 Float)]
         -> [Buffer os (B3 Float)]
+        -> Gui
         -> ContextT GLFW.Handle os m (RenderContext m os)
     }
 

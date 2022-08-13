@@ -1,4 +1,6 @@
-{-# language RankNTypes, BangPatterns #-}
+{-# language RankNTypes #-}
+{-# language OverloadedStrings #-}
+{-# language BlockArguments #-}
 
 module Graphics.Scene
     ( Scene(..)
@@ -10,7 +12,7 @@ module Graphics.Scene
 
 import Control.Monad.State
 import Control.Monad.Exception
-import Control.Exception
+import Control.Exception (evaluate)
 import Data.Fixed
 import Data.IORef
 import Data.List
@@ -32,6 +34,8 @@ import Graphics.View
 import Graphics.World
 
 ------------------------------------------------------------------------------------------------------------------------
+
+data SceneName = Incal | Polygonisation | CubeRoom
 
 data SceneContext m os = SceneContext
     { sceneContextCameraName :: !String
@@ -56,13 +60,11 @@ data Scene m os = Scene
     , sceneManipulate :: !(MonadIO m => (Float, Float) -> Event -> ContextT GLFW.Handle os m (Maybe (Scene m os))) -- ^ nothing => exit
     }
 
-createScene :: (MonadIO m, MonadAsyncException m) => Window os f Depth -> IORef (World os) -> IORef (SceneContext m os) -> Scene m os
-createScene window worldRef contextRef = Scene
-    (display window worldRef contextRef)
-    (animate window worldRef contextRef)
-    (manipulate window worldRef contextRef)
-
-data SceneName = Incal | Polygonisation | CubeRoom
+createScene :: (MonadIO m, MonadAsyncException m) => Window os f Depth -> IORef (World os) -> IORef (SceneContext m os) -> IORef Gui -> Scene m os
+createScene window worldRef contextRef guiRef = Scene
+    (display window worldRef contextRef guiRef)
+    (animate window worldRef contextRef guiRef)
+    (manipulate window worldRef contextRef guiRef)
 
 createSceneContext :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> SceneName -> String -> ContextT GLFW.Handle os m (SceneContext m os)
 createSceneContext window sceneName cameraName = do
@@ -83,11 +85,13 @@ display :: (MonadIO m, MonadAsyncException m)
     => Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext m os)
+    -> IORef Gui
     -> ((Int, Int), (Int, Int))
     -> ContextT GLFW.Handle os m ()
-display window worldRef contextRef bounds = do
+display window worldRef contextRef guiRef bounds = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
+    gui <- liftIO $ readIORef guiRef
 
     let camera = fromJust (lookup (sceneContextCameraName context) (worldCameras world))
         cameras = map snd (worldCameras world)
@@ -97,7 +101,7 @@ display window worldRef contextRef bounds = do
         normalBuffers = worldNormalBuffers world
         renderContext = sceneContextRenderContext context
 
-    newRenderContext <- renderContextRenderAction renderContext renderContext bounds camera cameras sun lights buffers normalBuffers
+    newRenderContext <- renderContextRenderAction renderContext renderContext bounds camera cameras sun lights buffers normalBuffers gui
 
     liftIO $ writeIORef contextRef (context{ sceneContextRenderContext = newRenderContext })
 
@@ -107,10 +111,11 @@ animate :: (MonadIO m, MonadAsyncException m)
     => Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext m os)
+    -> IORef Gui
     -> (Float, Float)
     -> Double
     -> ContextT GLFW.Handle os m (Scene m os)
-animate window worldRef contextRef (_, height) timeDelta = do
+animate window worldRef contextRef guiRef (_, height) timeDelta = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
 
@@ -154,7 +159,7 @@ animate window worldRef contextRef (_, height) timeDelta = do
         evaluate (forceElements cameras)
         writeIORef worldRef world{ worldCameras = cameras}
         writeIORef contextRef context{ sceneContextDrag = Nothing }
-    return $ createScene window worldRef contextRef
+    return $ createScene window worldRef contextRef guiRef
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -162,12 +167,13 @@ manipulate :: (MonadIO m, MonadAsyncException m)
     => Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext m os)
+    -> IORef Gui
     -> (Float, Float)
     -> Event
     -> ContextT GLFW.Handle os m (Maybe (Scene m os))
 
 -- Handle keyboard events.
-manipulate window worldRef contextRef _ (EventKey k _ ks _)
+manipulate window worldRef contextRef guiRef _ (EventKey k _ ks _)
 
     -- Exit application on Escape.
     | k == GLFW.Key'Escape = return Nothing
@@ -180,7 +186,7 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
             V2 w h = head (texture2DSizes tex)
         saveDepthTexture (w, h) tex "occlusion.png"
         liftIO $ infoM "Hadron" "Depth map saved"
-        return $ Just (createScene window worldRef contextRef)
+        return $ Just (createScene window worldRef contextRef guiRef)
 
     -- Save intermediate buffer rendering into a file.
     | k == GLFW.Key'O && ks == GLFW.KeyState'Pressed = do
@@ -190,7 +196,7 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
             V2 w h = head (texture2DSizes tex)
         saveTexture (w, h) tex "position.png"
         liftIO $ infoM "Hadron" "Color buffer saved"
-        return $ Just (createScene window worldRef contextRef)
+        return $ Just (createScene window worldRef contextRef guiRef)
 
     -- Next camera.
     | k == GLFW.Key'Tab && ks == GLFW.KeyState'Pressed = do
@@ -204,7 +210,7 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
         case nextCameraName of
             Just name -> liftIO $ writeIORef contextRef context{ sceneContextCameraName = name }
             Nothing -> return ()
-        return $ Just (createScene window worldRef contextRef)
+        return $ Just (createScene window worldRef contextRef guiRef)
 
     -- Move the camera using WASD keys (note that the keyboard layout is not taken into account).
     | otherwise = do
@@ -221,17 +227,17 @@ manipulate window worldRef contextRef _ (EventKey k _ ks _)
                 GLFW.Key'D -> handleKey GoRight moves
                 _ -> moves
         liftIO $ writeIORef contextRef context{ sceneContextCameraMoves = moves' }
-        return $ Just (createScene window worldRef contextRef)
+        return $ Just (createScene window worldRef contextRef guiRef)
 
 -- Rotate the camera by dragging the mouse.
-manipulate window worldRef contextRef _ (EventDrag dx dy) = do
+manipulate window worldRef contextRef guiRef _ (EventDrag dx dy) = do
     context <- liftIO $ readIORef contextRef
     let drag = (\(x, y) -> (x + realToFrac dx, y + realToFrac dy)) $ fromMaybe (0, 0) (sceneContextDrag context)
     liftIO $ writeIORef contextRef context{ sceneContextDrag = Just drag }
-    return $ Just (createScene window worldRef contextRef)
+    return $ Just (createScene window worldRef contextRef guiRef)
 
 -- Shot randomly colored fire balls with the mouse right button.
-manipulate window worldRef contextRef size (EventMouseButton b bs _) = do
+manipulate window worldRef contextRef guiRef size (EventMouseButton b bs _) = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
     let camera = fromJust (lookup (sceneContextCameraName context) (worldCameras world))
@@ -254,14 +260,14 @@ manipulate window worldRef contextRef size (EventMouseButton b bs _) = do
         else return []
     -- liftIO $ writeIORef worldRef world{ worldFireBalls = newFireBalls ++ worldFireBalls world }
     liftIO $ writeIORef contextRef context
-    return $ Just (createScene window worldRef contextRef)
+    return $ Just (createScene window worldRef contextRef guiRef)
 
 -- Store the cursor location.
-manipulate window worldRef contextRef _ (EventCursorPos x y) = do
+manipulate window worldRef contextRef guiRef _ (EventCursorPos x y) = do
     context <- liftIO $ readIORef contextRef
     liftIO $ writeIORef contextRef context{ sceneContextCursorPosition = (realToFrac x, realToFrac y) }
-    return $ Just (createScene window worldRef contextRef)
+    return $ Just (createScene window worldRef contextRef guiRef)
 
 -- Catch everything else.
-manipulate window worldRef contextRef _ _ =
-    return $ Just (createScene window worldRef contextRef)
+manipulate window worldRef contextRef guiRef _ _ =
+    return $ Just (createScene window worldRef contextRef guiRef)

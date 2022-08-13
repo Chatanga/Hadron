@@ -4,11 +4,12 @@ packages:
 - '.'
 - '../GPipe-Core/GPipe-Core'
 - '../GPipe-GLFW/GPipe-GLFW'
-#- '../dear-imgui.hs'
+- '../dear-imgui.hs'
 
-#flags:
-#  dear-imgui:
-#    opengl3: true
+flags:
+  dear-imgui:
+    glfw: true
+    opengl2: true
 
 extra-deps:
 - rosezipper-0.1

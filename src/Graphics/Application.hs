@@ -1,18 +1,20 @@
-{-# LANGUAGE FlexibleContexts  #-}
-{-# language BlockArguments #-}
-{-# language LambdaCase #-}
-{-# language OverloadedStrings #-}
+{-# language FlexibleContexts  #-}
 {-# language RankNTypes #-}
-{-# language InstanceSigs #-}
+{-# language BlockArguments #-}
+{-# language OverloadedStrings #-}
+{-# language FlexibleInstances #-}
+{-# language MultiParamTypeClasses #-}
 
 module Graphics.Application
     ( runApplication
     ) where
 
+import Control.Lens ((&), (<&>), (^.), index)
 import Control.Monad
 import Control.Monad.State
 import Data.IORef
 import Data.Maybe
+import Data.StateVar
 import Data.Tree
 import Data.Tree.Zipper
 import Graphics.GPipe
@@ -23,16 +25,25 @@ import System.Log.Logger
 import Control.Monad.IO.Class
 import Control.Monad.Exception
 
-{-
 import Control.Monad.Managed
-import qualified DearImGui as ImGui
-import qualified DearImGui.OpenGL3 as ImGui
--}
+import Data.Bits ((.|.))
+import Data.List (sortBy)
+import Data.Foldable (traverse_)
+import Data.Text (Text, pack)
 
 import Common.Debug
+import Graphics.Geometry
 import Graphics.Scene
+import Graphics.Shaders
 import Graphics.View
 import Graphics.World
+
+import DearImGui
+import DearImGui.OpenGL3
+import DearImGui.GLFW
+import DearImGui.GLFW.OpenGL
+import Graphics.GL
+import qualified Graphics.UI.GLFW
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -74,12 +85,13 @@ sceneHandleEvent event treeLoc =
 type ScenicUI m os = UI (ContextT GLFW.Handle os m) (Maybe (Scene m os))
 
 createScenicUI :: (MonadIO m, MonadAsyncException m)
-    => Window os f Depth
+    => Graphics.GPipe.Window os f Depth
     -> IORef (World os)
     -> IORef (SceneContext m os)
+    -> IORef Gui
     -> ScenicUI m os
-createScenicUI window currentWorld currentContext = createUI ui where
-    masterScene = createScene window currentWorld currentContext
+createScenicUI window currentWorld currentContext currentGui = createUI ui where
+    masterScene = createScene window currentWorld currentContext currentGui
     handleEvent = sceneHandleEvent
     ui = Node (createViewWithParams True defaultLayout handleEvent (Just masterScene)) []
 
@@ -116,8 +128,6 @@ renderViewTree screenSize viewTree = do
         _ -> return ()
     mapM_ (renderViewTree screenSize) (subForest viewTree)
 
-------------------------------------------------------------------------------------------------------------------------
-
 {-
 instance MonadException Managed where
     throw e = error (show e)
@@ -134,52 +144,148 @@ runApplication' :: String -> Managed ()
 runApplication' name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVersion = GLFW.OpenGlVersion 4 5 } ) $ do
 -}
 
+data GuiContent = GuiContent
+  { guiContentContext :: Maybe Context
+  , guiContentBuilder :: IO ()
+  }
+
+activateDearImGui :: IORef GuiContent -> IO ()
+activateDearImGui guiContentRef = do
+    Just win <- Graphics.UI.GLFW.getCurrentContext
+    guiContent <- readIORef guiContentRef
+
+    context <- case guiContentContext guiContent of
+        Nothing -> do
+            -- Create an ImGui context
+            context <- DearImGui.createContext -- / destroyContext
+            -- Initialize ImGui's GLFW backend
+            {-
+            TODO Rerouting the event won’t be easy since DearImGui callback are low level.
+
+            glfwCursorPosCallback
+            glfwMouseButtonCallback
+            glfwKeyCallback
+
+            glfwWindowFocusCallback
+            glfwCursorEnterCallback
+            glfwCharCallback
+            glfwScrollCallback
+            glfwMonitorCallback
+            -}
+            glfwInitForOpenGL win True -- / glfwShutdown
+            -- Initialize ImGui's OpenGL backend
+            openGL3Init -- / openGL3Shutdown
+
+            writeIORef guiContentRef (guiContent { guiContentContext = Just context })
+
+            return context
+
+        Just context -> return context
+
+    -- Tell ImGui we're starting a new frame
+    openGL3NewFrame
+    glfwNewFrame
+    newFrame
+
+    -- Build the GUI
+    guiContentBuilder guiContent
+
+    -- Render
+    DearImGui.render
+    openGL3RenderDrawData =<< getDrawData
+
+data DataPath c a = DataPath {
+    ref :: IORef c,
+    getIt :: c -> a,
+    setIt :: c -> a -> c
+}
+
+instance HasGetter (DataPath c a) a where
+    get p = liftIO $ getIt p <$> readIORef (ref p)
+
+instance HasSetter (DataPath c a) a where
+    p $= x = liftIO $ modifyIORef (ref p) (\c -> setIt p c x)
+
+buildDearImGui :: IORef (World os) -> IORef (SceneContext IO os) -> IORef Gui -> IO ()
+buildDearImGui worldRef contextRef guiRef = do
+    let readOnly x _ = x
+    let fpsPath = DataPath guiRef (pack . (\n -> showGFloat (Just 2) n "") . guiFps) readOnly
+        debugPath = DataPath guiRef guiDebug (\g x -> g{ guiDebug = x })
+        [xPath, yPath, zPath] = map
+            (\c -> DataPath worldRef (pack . show . c . cameraPosition . snd . head . worldCameras) readOnly)
+            [(^._x), (^._y) ,(^._z)]
+    bracket_ (begin "Hadron - Settings") end do
+        inputText "FPS" fpsPath 0
+        text "First camera position"
+        inputText "x" xPath 0
+        inputText "y" yPath 0
+        inputText "z" yPath 0
+        checkbox "Debug" debugPath
+        {-
+        clicking <- button "Close"
+        when clicking $ Data.StateVar.get debugPath >>= print
+        -}
+        return ()
+
 runApplication :: String -> IO ()
-runApplication name = runContextT (GLFW.defaultHandleConfig{ GLFW.configOpenGlVersion = GLFW.OpenGlVersion 4 5 } ) $ do
-    let (w , h) = (800, 600)
+runApplication name = do
+    guiContentRef <- newIORef (GuiContent Nothing (return ()))
+    let config = GLFW.defaultHandleConfig
+            { GLFW.configOpenGlVersion = GLFW.OpenGlVersion 4 5
+            , GLFW.configWindowHook = Just (activateDearImGui guiContentRef)
+            }
+    runContextT config $ do
+        let (w , h) = (800, 600)
 
-    window <- newWindow
-        (WindowFormatColorDepth SRGB8A8 Depth16)
-        (GLFW.defaultWindowConfig name){ GLFW.configWidth = w, GLFW.configHeight = h }
+        window <- newWindow
+            (WindowFormatColorDepth SRGB8A8 Depth16)
+            (GLFW.defaultWindowConfig name){ GLFW.configWidth = w, GLFW.configHeight = h }
 
-    currentWorld <- liftIO . newIORef =<< createWorld window
-    currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation "primary-camera"
-    uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext
-    quitRef <- liftIO $ newIORef False
+        currentWorld <- liftIO . newIORef =<< createWorld window
+        currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation "primary-camera"
+        currentGui <- liftIO $ newIORef (Gui 0 false)
+        uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext currentGui
+        quitRef <- liftIO $ newIORef False
 
-    eventQueueRef <- liftIO $ newIORef []
-    let
-        -- Queue an event for later processing in the proper context.
-        pushEvent event = modifyIORef' eventQueueRef (event :)
-        -- Process an event in the proper context.
-        doProcessEvent event = do
-            ui <- liftIO $ readIORef uiRef
-            ui' <- processEvent ui event
-            liftIO $ writeIORef uiRef ui'
-            liftIO $ writeIORef quitRef (uiTerminated ui')
+        eventQueueRef <- liftIO $ newIORef []
+        let
+            -- Queue an event for later processing in the proper context.
+            pushEvent event = modifyIORef' eventQueueRef (event :)
+            -- Process an event in the proper context.
+            doProcessEvent event = do
+                ui <- liftIO $ readIORef uiRef
+                ui' <- processEvent ui event
+                liftIO $ writeIORef uiRef ui'
+                liftIO $ writeIORef quitRef (uiTerminated ui')
 
-    -- Collect and queue incoming events.
-    GLFW.setKeyCallback window $ Just $ \k n ks mk ->
-        pushEvent (EventKey k n ks mk)
-    GLFW.setMouseButtonCallback window $ Just $ \b bs mk ->
-        pushEvent (EventMouseButton b bs mk)
-    void $ GLFW.setCursorPosCallback window $ Just $ \x y ->
-        pushEvent (EventCursorPos x y)
+        -- Collect and queue incoming events.
+        GLFW.setKeyCallback window $ Just $ \k n ks mk -> do
+            pushEvent (EventKey k n ks mk)
+        GLFW.setMouseButtonCallback window $ Just $ \b bs mk ->
+            pushEvent (EventMouseButton b bs mk)
+        void $ GLFW.setCursorPosCallback window $ Just $ \x y ->
+            pushEvent (EventCursorPos x y)
 
-    -- Run the main loop.
-    mainLoop window 0 (0, Nothing, Nothing) (V2 0 0) currentWorld uiRef quitRef eventQueueRef doProcessEvent
+        liftIO $ do
+            guiContent <- readIORef guiContentRef
+            writeIORef guiContentRef (guiContent { guiContentBuilder = buildDearImGui currentWorld currentContext currentGui })
+
+        -- Run the main loop.
+        mainLoop window 0 (0, Nothing, Nothing) (V2 0 0) currentWorld currentContext currentGui uiRef quitRef eventQueueRef doProcessEvent
 
 mainLoop :: Window os f Depth
     -> Int
     -> (Int, Maybe Double, Maybe Double)
     -> V2 Int
     -> IORef (World os)
+    -> IORef (SceneContext m os)
+    -> IORef Gui
     -> IORef (ScenicUI IO os)
     -> IORef Bool
     -> IORef [Event]
     -> (Event -> ContextT GLFW.Handle os IO ())
     -> ContextT GLFW.Handle os IO ()
-mainLoop window counter (frameCount, mt0, mt1) bfSize worldRef uiRef quitRef eventQueueRef doProcessEvent = do
+mainLoop window counter (frameCount, mt0, mt1) bfSize worldRef contextRef guiRef uiRef quitRef eventQueueRef doProcessEvent = do
 
     -- Calculate the FPS.
     mt2 <- liftIO GLFW.getTime
@@ -187,7 +293,8 @@ mainLoop window counter (frameCount, mt0, mt1) bfSize worldRef uiRef quitRef eve
     timing <- if elapsedSeconds > 0.25
         then do
             let fps = fromIntegral frameCount / elapsedSeconds
-            liftIO $ debugM "Hadron" ("FPS: " ++ showGFloat (Just 2) fps "")
+            -- liftIO $ debugM "Hadron" ("FPS: " ++ showGFloat (Just 2) fps "")
+            liftIO $ modifyIORef guiRef (\gui -> gui{ guiFps = fps })
             return (1, mt2, mt2)
         else
             return (frameCount + 1, mt0, mt2)
@@ -218,4 +325,4 @@ mainLoop window counter (frameCount, mt0, mt1) bfSize worldRef uiRef quitRef eve
     shouldQuit <- (||) <$> liftIO (readIORef quitRef) <*> pure shouldClose
     if shouldQuit
         then liftIO $ infoM "Hadron" "Exiting"
-        else mainLoop window (counter+1) timing bfSize' worldRef uiRef quitRef eventQueueRef doProcessEvent
+        else mainLoop window (counter+1) timing bfSize' worldRef contextRef guiRef uiRef quitRef eventQueueRef doProcessEvent
