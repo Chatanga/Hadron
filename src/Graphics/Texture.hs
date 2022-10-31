@@ -2,11 +2,13 @@
 
 module Graphics.Texture
     ( loadImage
+    , loadCubeImage
     , saveDepthTexture
     , saveTexture
     , generateNoiseTexture
     , generate2DNoiseTexture
     , generate3DNoiseTexture
+    , withSingleTranspose
     ) where
 
 import Control.Monad
@@ -15,29 +17,33 @@ import Control.Monad.Exception
 import Codec.Picture as JP
 import Codec.Picture.Types
 import Data.Array
+import Data.List
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
 
+import Common.Debug
 import Common.Random
+import Data.Vector (unfoldrExactN)
 
 ------------------------------------------------------------------------------------------------------------------------
 
 getFormatName :: DynamicImage -> (String, String)
 getFormatName dynamicImage = case dynamicImage of
     ImageY8 _       -> ("Y8",       "a greyscale image")
-    ImageY16 _      -> ("Y16",      "a greyscale image with 16bit components")
+    ImageY16 _      -> ("Y16",      "a greyscale image with 16 bit component")
+    ImageY32 _      -> ("Y32",      "a greyscale image with 32 bit component")
     ImageYF _       -> ("YF",       "a greyscale HDR image")
     ImageYA8 _      -> ("YA8",      "an image in greyscale with an alpha channel")
-    ImageYA16 _     -> ("YA16",     "an image in greyscale with alpha channel on 16 bits")
+    ImageYA16 _     -> ("YA16",     "an image in greyscale with alpha channel on 16 bit")
     ImageRGB8 _     -> ("RGB8",     "an image in true color")
-    ImageRGB16 _    -> ("RGB16",    "an image in true color with 16bit depth")
+    ImageRGB16 _    -> ("RGB16",    "an image in true color with 16 bit depth")
     ImageRGBF _     -> ("RGBF",     "an image with HDR pixels")
     ImageRGBA8 _    -> ("RGBA8",    "an image in true color and an alpha channel")
-    ImageRGBA16 _   -> ("RGBA16",   "a true color image with alpha on 16 bits")
+    ImageRGBA16 _   -> ("RGBA16",   "a true color image with alpha on 16 bit")
     ImageYCbCr8 _   -> ("YCbCr8",   "an image in the colorspace used by Jpeg images")
     ImageCMYK8 _    -> ("CMYK8",    "an image in the colorspace CMYK")
-    ImageCMYK16 _   -> ("CMYK16",   "an image in the colorspace CMYK and 16 bits precision")
+    ImageCMYK16 _   -> ("CMYK16",   "an image in the colorspace CMYK and 16 bit precision")
 
 loadImage :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => String -> ContextT ctx os m (Maybe (Texture2D os (Format RGBFloat)))
 loadImage path = do
@@ -45,7 +51,7 @@ loadImage path = do
             let size = V2 (imageWidth image) (imageHeight image)
             texture <- newTexture2D' path SRGB8 size maxBound -- JPG converts to SRGB
             let getJuicyPixel xs _x _y pix = let PixelRGB8 r g b = convertPixel pix in V3 r g b : xs
-            writeTexture2D texture 0 0 size (pixelFold getJuicyPixel [] image)
+            writeTexture2D texture 0 (pure 0) size (pixelFold getJuicyPixel [] image)
             return (Just texture)
 
     liftIO (readImage path) >>= \case
@@ -64,6 +70,66 @@ loadImage path = do
                 _ -> do
                     liftIO $ errorM "Hadron" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
                     return Nothing
+
+withSingleTranspose :: Int -> ([a] -> [a]) -> ([a] -> [a]) -> [a] -> [a]
+withSingleTranspose n before after = concatMap after . Data.List.transpose . map before . take n . unfoldr (Just . splitAt n)
+
+withDualTranspose :: Int -> ([a] -> [a]) -> ([a] -> [a]) -> [a] -> [a]
+withDualTranspose n before after = concat . Data.List.transpose . map after . Data.List.transpose . map before . take n . unfoldr (Just . splitAt n)
+
+rot90_mirrorV n = withSingleTranspose n id id
+rot270_mirrorH = rot90_mirrorV
+rot90 n = withSingleTranspose n id reverse
+rot270 n = withSingleTranspose n reverse id
+rot90_mirrorH n = withSingleTranspose n reverse reverse
+rot270_mirrorV = rot90_mirrorH
+
+mirrorH n = withDualTranspose n id reverse
+rot180_mirrorV = mirrorH
+mirrorV n = withDualTranspose n reverse id
+rot180_mirrorH = mirrorV
+rot180 n = withDualTranspose n reverse reverse
+mirrorVH = rot180
+
+loadCubeImage :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => Int -> [String] -> ContextT ctx os m (Maybe (TextureCube os (Format RGBFloat)))
+loadCubeImage expectedSize paths = do
+    texture <- newTextureCube SRGB8 expectedSize maxBound -- JPG converts to SRGB
+
+    let loadPixels cubeFace path image = do
+            let size = traceIt "size" $ V2 (imageWidth image) (imageHeight image)
+                getJuicyPixel xs _x _y pix = let PixelRGB8 r g b = convertPixel pix in V3 r g b : xs
+                transform ps
+                    | cubeFace == CubeNegX = rot270 expectedSize ps
+                    | cubeFace == CubePosX = rot90 expectedSize ps
+                    | cubeFace == CubeNegY = rot180 expectedSize ps
+                    | cubeFace == CubePosY = ps
+                    | cubeFace == CubeNegZ = ps
+                    | cubeFace == CubePosZ = rot90 expectedSize ps
+                    | otherwise = error "Non exhaustive? Really?"
+            writeTextureCube texture 0 cubeFace (pure 0) size (transform (pixelFold getJuicyPixel [] image))
+            return True
+
+    let cubeFaces = [CubeNegX, CubePosX, CubeNegY, CubePosY, CubeNegZ, CubePosZ]
+
+    success <- fmap and <$> forM (zip cubeFaces paths) $ \(cubeFace, path) ->
+        liftIO (readImage path) >>= \case
+            Left e -> do
+                liftIO $ errorM "Hadron" ("could not load image " ++ path ++ ": " ++ e)
+                return False
+            Right dynamicImage -> do
+                liftIO $ infoM "Hadron" ("Loading image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+                case dynamicImage of
+                    -- ImageY8 image -> loadPixels image
+                    ImageRGB8 image -> loadPixels cubeFace path image
+                    -- ImageRGBA8 image -> loadPixels image
+                    ImageYCbCr8 image ->
+                        let image' = convertImage image :: JP.Image PixelRGB8
+                        in  loadPixels cubeFace path image'
+                    _ -> do
+                        liftIO $ errorM "Hadron" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+                        return False
+
+    return $ if success then Just texture else Nothing
 
 saveDepthTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadAsyncException m) => (Int, Int) -> Texture2D os (Format Depth) -> String -> ContextT ctx os m ()
 saveDepthTexture (w, h) texture path = do

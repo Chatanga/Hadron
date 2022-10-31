@@ -221,8 +221,9 @@ buildDearImGui worldRef contextRef guiRef = do
         inputText "x" xPath 0
         inputText "y" yPath 0
         inputText "z" yPath 0
-        -- fogDensity
-        sliderFloat "Fog density" fogDensity 0 0.005
+        text "Fog"
+        sliderFloat "density" fogDensity 0 0.005
+        text "Misc"
         checkbox "Debug" debugPath
         {-
         clicking <- button "Close"

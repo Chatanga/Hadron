@@ -4,9 +4,9 @@ module Graphics.MarchingCube
     ( EdgeIndice
     , cube
     , cubeEdges
+    , cubeFaces
     , maxCellTriangleCount
     , generateCaseProtoTriangleList
-    , weaveTunnel
     )
 where
 
@@ -62,6 +62,7 @@ cubeEdges :: [Edge] =
 -}
 faces :: [FaceIndice] = [0 .. 5]
 
+-- Coordinates are sorted for each face for comparison, not rendering.
 cubeFaces :: [(VerticeIndice, VerticeIndice, VerticeIndice, VerticeIndice)]
 cubeFaces =
     [ (0, 1, 2, 3)
@@ -220,20 +221,6 @@ weaveTunnel sea isleShore1 isleShore2 = triangles' where
     next isle False edge = next (reverse isle) True edge
     next isle True edge = head $ tail $ dropWhile (not . (==) edge) (cycle isle)
 
-    {-
-    weave :: (Edge, Edge) -> (Edge, Edge) -> [(Edge, Edge, Edge)]
-    weave firstLink (a, b) = allTriangles where
-        (a', b') = (next isle1 True a, next isle2 False b)
-        (triangles, nextLink)
-            | (a, b') `elem` links = ([(b', b, a)], (a, b'))
-            | (a', b) `elem` links = ([(a, a', b)], (a', b))
-            | (a', b') `elem` links = ([(a, a', b), (a', b', b)], (a', b'))
-            | otherwise = error "Should not happen!"
-        allTriangles = if nextLink /= firstLink
-            then triangles ++ weave firstLink nextLink
-            else triangles
-    -}
-
     weave :: (Edge, Edge) -> (Edge, Edge) -> [Face]
     weave firstLink (a, b) = allTriangles where
         (a', b') = (next isle1 True a, next isle2 False b)
@@ -259,6 +246,7 @@ weaveTunnel sea isleShore1 isleShore2 = triangles' where
     toTriangles faces = case break isTriangleFace faces of
         (quads, []) -> concatMap (\(QuadFace a a' b b') -> [(a, a', b), (a', b', b)]) quads
         (quads, TriangleFace s i1 i2 i3 : otherFaces) -> toTriangles2 s (TriangleFace s i1 i2 i3 : otherFaces ++ quads)
+        _ -> error "Should not happen!"
 
     isCubeFace' :: Face -> Bool
     isCubeFace' TriangleFace {} = False
