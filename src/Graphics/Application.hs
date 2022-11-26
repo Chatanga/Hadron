@@ -215,12 +215,16 @@ buildDearImGui worldRef contextRef guiRef = do
         [xPath, yPath, zPath] = map
             (\c -> DataPath worldRef (pack . show . c . cameraPosition . snd . head . worldCameras) readOnly)
             [(^._x), (^._y) ,(^._z)]
+        [xCursorPath, yCursorPath] = map (\c -> DataPath contextRef (pack . show . c . sceneContextCursorPosition) readOnly) [fst, snd]
     bracket_ (begin "Hadron - Settings") end do
         inputText "FPS" fpsPath 0
         text "First camera position"
         inputText "x" xPath 0
         inputText "y" yPath 0
-        inputText "z" yPath 0
+        inputText "z" zPath 0
+        text "Mouse cursor"
+        inputText "x" xCursorPath 0
+        inputText "y" yCursorPath 0
         text "Fog"
         sliderFloat "density" fogDensity 0 0.005
         text "Misc"

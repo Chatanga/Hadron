@@ -12,4 +12,5 @@ flags:
     opengl2: true
 
 extra-deps:
+- freetype2-0.1.1
 - rosezipper-0.1

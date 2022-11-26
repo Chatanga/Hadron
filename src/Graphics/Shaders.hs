@@ -309,6 +309,7 @@ data RenderContext m os = RenderContext
         -> [Buffer os (B3 Float, B3 Float)]
         -> [Buffer os (B3 Float)]
         -> Gui
+        -> (Float, Float)
         -> ContextT GLFW.Handle os m (RenderContext m os)
     }
 

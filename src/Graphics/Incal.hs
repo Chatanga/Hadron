@@ -51,7 +51,7 @@ createIncalRenderer window = do
     compiledScreenShader <- compileShader . silenceShader $ screenShader window
     compiledNormalShader <- compileShader $ normalShader window shaderConfigUniformBuffer
 
-    let renderAction context bounds camera _ sun lights buffers normalBuffers _ = do
+    let renderAction context bounds camera _ sun lights buffers normalBuffers _ _ = do
             let (_, (w, h)) = bounds
                 size = V2 w h
             frameBufferGroup <- case renderContextFrameBufferGroup context of

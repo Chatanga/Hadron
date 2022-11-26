@@ -2,12 +2,14 @@
 
 module Graphics.CubeRoom
     ( createCubeRoomRenderer
+    , createCubePreRenderer
     )
 where
 
 import Prelude hiding ((.), id, (<*))
 import Control.Category (Category((.)), id)
 import Control.Lens ((&), (<&>), (^.))
+import Control.Monad
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception
 import Data.Bifunctor ( Bifunctor(first) )
@@ -15,9 +17,11 @@ import Data.Int (Int8, Int32)
 import Data.Word (Word8, Word16, Word32)
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
+import Numeric
 
 import Common.Debug
 import Graphics.Color
+import Graphics.Font
 import Graphics.Geometry
 import Graphics.MarchingCube
 import Graphics.Shaders
@@ -36,17 +40,29 @@ generateBoolCase i = [ x:xs | x <- [False, True], xs <- generateBoolCase (i - 1)
 verticeFromEdge :: Int -> V3 Float
 verticeFromEdge egdeIndice = let (v1, v2) = cubeEdges!!egdeIndice in fmap fromIntegral (cube!!v1 + cube!!v2) / 2
 
-instanciateBackProtoTriangleList :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [(V3 Float, V3 Float)]
-instanciateBackProtoTriangleList = concatMap f where
+instanciateProtoTriangleList :: Bool -> [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [(V3 Float, V3 Float)]
+instanciateProtoTriangleList flipped = concatMap f where
     f (e1, e2, e3) =
-        let [v1, v2, v3] = [verticeFromEdge e1, verticeFromEdge e2, verticeFromEdge e3]
-            n = normalize ((v3 - v1) `cross` (v2 - v1))
-        in  [(v1, n), (v3, n), (v2, n)]
+        let [v1, v2, v3] = if flipped
+            then [verticeFromEdge e1, verticeFromEdge e3, verticeFromEdge e2]
+            else [verticeFromEdge e1, verticeFromEdge e2, verticeFromEdge e3]
+            n = normalize ((v2 - v1) `cross` (v3 - v1))
+        in  [(v1, n), (v2, n), (v3, n)]
 
-instanciateProtoTriangleList :: [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [(V3 Float, V3 Float)]
-instanciateProtoTriangleList = concatMap f where
+weightedVerticeFromEdge :: [Float] -> Int -> V3 Float
+weightedVerticeFromEdge densities egdeIndice =
+    let (v1, v2) = cubeEdges!!egdeIndice
+        (d1, d2) = (densities!!v1, densities!!v2)
+        a = d1 / (d1 - d2)
+    in  (1 - a) *^ (cube!!v1) + a *^ (cube!!v2)
+
+instanciateTriangleList :: Bool -> [Float] -> [(EdgeIndice, EdgeIndice, EdgeIndice)] -> [(V3 Float, V3 Float)]
+instanciateTriangleList flipped densities = concatMap f where
     f (e1, e2, e3) =
-        let [v1, v2, v3] = [verticeFromEdge e1, verticeFromEdge e2, verticeFromEdge e3]
+        let getVertice = weightedVerticeFromEdge densities
+            [v1, v2, v3] = if flipped
+            then [getVertice e1, getVertice e3, getVertice e2]
+            else [getVertice e1, getVertice e2, getVertice e3]
             n = normalize ((v2 - v1) `cross` (v3 - v1))
         in  [(v1, n), (v2, n), (v3, n)]
 
@@ -56,7 +72,7 @@ createBlocksRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadEx
     Buffer os (Uniform FogB) ->
     Buffer os (Uniform DirectionLightB) ->
     Buffer os (B3 Float, B3 Float, B Int32) ->
-    ContextT ctx os m (ViewPort -> Render os ())
+    ContextT ctx os m (ViewPort -> Int -> Render os ())
 createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer = do
 
     shader :: CompiledShader os (ViewPort, PrimitiveArray Triangles (B3 Float, B3 Float, B Int32))  <- compileShader $ do
@@ -86,31 +102,30 @@ createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer = d
                 in  (c, rasterizedFragCoord ri ^. _z))
 
         let colorOption = ContextColorOption NoBlending (pure True)
-            depthOption = DepthOption Less True
+            depthOption = DepthOption Lequal True
         drawWindowColorDepth (const (window, colorOption, depthOption)) fs
 
-    return $ \viewPort -> do
-        block <- toPrimitiveArray TriangleList <$> newVertexArray blockBuffer
+    return $ \viewPort primitiveCount -> do
+        block <- toPrimitiveArray TriangleList . takeVertices primitiveCount <$> newVertexArray blockBuffer
         shader (viewPort, block)
 
 createCubesRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) =>
     Window os RGBAFloat Depth ->
     Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) ->
+    Buffer os (Uniform (B Float)) ->
     Buffer os (B3 Float) ->
     ContextT ctx os m (ViewPort -> Render os ())
-createCubesRenderer window projectionBuffer offsetBuffer = do
+createCubesRenderer window projectionBuffer scaleBuffer offsetBuffer = do
 
-    let floatCube :: [V3 Float]
-        floatCube = map (fmap fromIntegral) cube
-
-    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length floatCube)
-    writeBuffer blockOutlineBuffer 0 floatCube
+    blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length cube)
+    writeBuffer blockOutlineBuffer 0 cube
 
     let edges = concatMap (\(i, j) -> [i, j]) $ filter (\(i, j) -> j > i) cubeEdges
     blockOutlineIndexBuffer :: Buffer os (BPacked Word8) <- newBuffer (length edges)
     writeBuffer blockOutlineIndexBuffer 0 (map fromIntegral edges)
 
     shader :: CompiledShader os (ViewPort, PrimitiveArray Lines (B3 Float, B3 Float))  <- compileShader $ do
+        scale <- getUniform (const (scaleBuffer, 0))
         (projectionMat, cameraMat, _) <- getUniform (const (projectionBuffer, 0))
         let modelViewProj = projectionMat !*! cameraMat
 
@@ -119,7 +134,7 @@ createCubesRenderer window projectionBuffer offsetBuffer = do
             projectedLines :: PrimitiveStream Lines (V4 VFloat, ())
             projectedLines =
                 (\p -> (modelViewProj !* p, ())) .
-                (\(p, o) -> point p + vector o) <$>
+                (\(p, o) -> point (p ^* scale) + vector o) <$>
                 lines
 
         let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
@@ -192,6 +207,9 @@ createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstance
 createCubeRoomRenderer :: (MonadIO m, MonadAsyncException m) => Window os RGBAFloat Depth -> ContextT GLFW.Handle os m (RenderContext m os)
 createCubeRoomRenderer window = do
 
+    scaleBuffer :: Buffer os (Uniform (B Float)) <- newBuffer 1
+    writeBuffer scaleBuffer 0 [1]
+
     fogBuffer :: Buffer os (Uniform FogB) <- newBuffer 1
     sunBuffer :: Buffer os (Uniform DirectionLightB) <- newBuffer 1
     projectionBuffer :: Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float)) <- newBuffer 1
@@ -199,12 +217,13 @@ createCubeRoomRenderer window = do
     let allCases = concat $ replicate 16 $ generateBoolCase 8
         cubePosition i = fromIntegral <$> 2 * V3 ((i `mod` 256) `mod` 16) ((i `mod` 256) `div` 16) (i `div` 256)
 
-        createCorners (i, aboveness) = zipWith (\p c -> (cubePosition i + fmap fromIntegral p, if c then 1 else 0)) cube aboveness
+        createCorners (i, aboveness) = zipWith (\p c -> (cubePosition i + p, if c then 1 else 0)) cube aboveness
         corners = concatMap createCorners (zip [0..] allCases)
 
         createBlock (i, aboveness) =
-            let vertices = instanciateProtoTriangleList (generateCaseProtoTriangleList aboveness)
-                backVertices = instanciateBackProtoTriangleList (generateCaseProtoTriangleList aboveness)
+            let triangles = generateCaseProtoTriangleList aboveness
+                vertices = instanciateProtoTriangleList False triangles
+                backVertices = instanciateProtoTriangleList True triangles
                 moveAndColorize c = map (\(v, n) -> (v + cubePosition i, n, c))
             in  moveAndColorize 1 vertices ++ moveAndColorize 0 backVertices
         blocks = concatMap createBlock (zip [0..] allCases)
@@ -218,13 +237,13 @@ createCubeRoomRenderer window = do
     blockBuffer :: Buffer os (B3 Float, B3 Float, B Int32) <- newBuffer (length blocks)
     writeBuffer blockBuffer 0 blocks
 
-    cubesRenderer <- createCubesRenderer window projectionBuffer cubeOffsetBuffer
+    cubesRenderer <- createCubesRenderer window projectionBuffer scaleBuffer cubeOffsetBuffer
     cornersRenderer <- createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstanceBuffer
     blocksRenderer <- createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer
 
     writeBuffer fogBuffer 0 [Fog (point skyBlue) 10 100 0.02]
 
-    let renderIt _ bounds camera _ sun lights buffers normalBuffers _ = do
+    let renderIt _ bounds camera _ sun lights buffers normalBuffers _ _ = do
 
             writeBuffer sunBuffer 0 [sun]
 
@@ -237,8 +256,55 @@ createCubeRoomRenderer window = do
                 let viewPort = ViewPort (V2 x y) (V2 w h)
                 cubesRenderer viewPort
                 cornersRenderer viewPort
-                blocksRenderer viewPort
+                blocksRenderer viewPort (length blocks)
 
             return $ RenderContext Nothing renderIt
 
     return (RenderContext Nothing renderIt)
+
+-- ***
+
+createCubePreRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m)
+    => Window os RGBAFloat Depth
+    -> Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float))
+    -> Buffer os (Uniform FogB)
+    -> Buffer os (Uniform DirectionLightB)
+    -> ContextT ctx os m (((Float, V3 Float), ([Bool], [Float])) -> ContextT ctx os m (ViewPort -> Render os ()))
+createCubePreRenderer window projectionBuffer fogBuffer sunBuffer = do
+
+    scaleBuffer :: Buffer os (Uniform (B Float)) <- newBuffer 1
+    cubeOffsetBuffer :: Buffer os (B3 Float) <- newBuffer 1
+    cornerInstanceBuffer :: Buffer os (B3 Float, B Int32) <- newBuffer 8
+    blockBuffer :: Buffer os (B3 Float, B3 Float, B Int32) <- newBuffer (5 * 3)
+
+    cubesRenderer <- createCubesRenderer window projectionBuffer scaleBuffer cubeOffsetBuffer
+    cornersRenderer <- createCornersRenderer window projectionBuffer fogBuffer sunBuffer cornerInstanceBuffer
+    blocksRenderer <- createBlocksRenderer window projectionBuffer fogBuffer sunBuffer blockBuffer
+
+    textPreRenderers <- replicateM 8 (createBitmapTextPreRenderer window projectionBuffer)
+
+    return $ \((scale, offset), (aboveness, densities)) -> do
+
+        let corners = zipWith (\p c -> (offset + p ^* scale, if c then 1 else 0)) cube aboveness
+
+            blockTriangles =
+                let triangles = generateCaseProtoTriangleList aboveness
+                    vertices = instanciateTriangleList False densities triangles
+                    backVertices = instanciateTriangleList True densities triangles
+                    moveAndColorize c = map (\(v, n) -> (offset + v ^* scale, n, c))
+                in  moveAndColorize 1 vertices ++ moveAndColorize 0 backVertices
+
+        writeBuffer scaleBuffer 0 [scale]
+        writeBuffer cubeOffsetBuffer 0 [offset]
+        writeBuffer cornerInstanceBuffer 0 corners
+        writeBuffer blockBuffer 0 blockTriangles
+
+        textRenderers <- forM (zip3 textPreRenderers (map fst corners) densities) $ \(textPreRenderer, corner, density) -> do
+            let text = showFFloat (Just 2) (density * 100) ""
+            textPreRenderer corner 0.02 text
+
+        return $ \viewPort -> do
+            cubesRenderer viewPort
+            cornersRenderer viewPort
+            blocksRenderer viewPort (length blockTriangles)
+            mapM_ ($ viewPort) textRenderers

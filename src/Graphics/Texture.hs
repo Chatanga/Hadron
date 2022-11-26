@@ -2,6 +2,7 @@
 
 module Graphics.Texture
     ( loadImage
+    , loadGreyscaleImage
     , loadCubeImage
     , saveDepthTexture
     , saveTexture
@@ -18,6 +19,7 @@ import Codec.Picture as JP
 import Codec.Picture.Types
 import Data.Array
 import Data.List
+import Data.Word (Word8, Word16, Word32)
 import Graphics.GPipe
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 import System.Log.Logger
@@ -47,7 +49,7 @@ getFormatName dynamicImage = case dynamicImage of
 
 loadImage :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => String -> ContextT ctx os m (Maybe (Texture2D os (Format RGBFloat)))
 loadImage path = do
-    let loadPixels image = do
+    let loadPixels3 image = do
             let size = V2 (imageWidth image) (imageHeight image)
             texture <- newTexture2D' path SRGB8 size maxBound -- JPG converts to SRGB
             let getJuicyPixel xs _x _y pix = let PixelRGB8 r g b = convertPixel pix in V3 r g b : xs
@@ -62,10 +64,58 @@ loadImage path = do
             liftIO $ infoM "Hadron" ("Loading image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
             case dynamicImage of
                 -- ImageY8 image -> loadPixels image
-                ImageRGB8 image -> loadPixels image
+                ImageRGB8 image -> loadPixels3 image
                 -- ImageRGBA8 image -> loadPixels image
                 ImageYCbCr8 image ->
                     let image' = convertImage image :: JP.Image PixelRGB8
+                    in  loadPixels3 image'
+                _ -> do
+                    liftIO $ errorM "Hadron" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+                    return Nothing
+
+loadGreyscaleImage :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => String -> ContextT ctx os m (Maybe (Texture2D os (Format RFloat)))
+loadGreyscaleImage path = do
+    let loadPixels image = do
+            let size = V2 (imageWidth image) (imageHeight image)
+            texture <- newTexture2D' path R8S size maxBound
+            let getJuicyPixel :: [Float] -> p -> p -> Pixel8 -> [Float]
+                getJuicyPixel xs _x _y pix = let x = fromIntegral (convertPixel pix :: Pixel8) :: Float in (x / 256) : xs
+            writeTexture2D texture 0 (pure 0) size (pixelFold getJuicyPixel [] image)
+            return (Just texture)
+
+    liftIO (readImage path) >>= \case
+        Left e -> do
+            liftIO $ errorM "Hadron" ("could not load image " ++ path ++ ": " ++ e)
+            return Nothing
+        Right dynamicImage -> do
+            liftIO $ infoM "Hadron" ("Loading image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+            case dynamicImage of
+                ImageY8 image ->
+                    let image' = convertImage image :: JP.Image Pixel8
+                    in  loadPixels image'
+                _ -> do
+                    liftIO $ errorM "Hadron" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+                    return Nothing
+
+loadGreyscaleImage2 :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => String -> ContextT ctx os m (Maybe (Texture2D os (Format RWord)))
+loadGreyscaleImage2 path = do
+    let loadPixels image = do
+            let size = V2 (imageWidth image) (imageHeight image)
+            texture <- newTexture2D' path R8UI size maxBound
+            let getJuicyPixel :: [Word8] -> p -> p -> Pixel8 -> [Word8]
+                getJuicyPixel xs _x _y pix = let x = fromIntegral (convertPixel pix :: Pixel8) :: Word8 in x : xs
+            writeTexture2D texture 0 (pure 0) size (pixelFold getJuicyPixel [] image)
+            return (Just texture)
+
+    liftIO (readImage path) >>= \case
+        Left e -> do
+            liftIO $ errorM "Hadron" ("could not load image " ++ path ++ ": " ++ e)
+            return Nothing
+        Right dynamicImage -> do
+            liftIO $ infoM "Hadron" ("Loading image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
+            case dynamicImage of
+                ImageY8 image ->
+                    let image' = convertImage image :: JP.Image Pixel8
                     in  loadPixels image'
                 _ -> do
                     liftIO $ errorM "Hadron" ("Unmanaged image format " ++ path ++ ": " ++ fst (getFormatName dynamicImage))
@@ -155,8 +205,9 @@ saveTexture (w, h) texture path = do
 
 generateNoiseTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => (Int, Int) -> ContextT ctx os m (Texture2D os (Format RGBFloat))
 generateNoiseTexture (width, height) = do
-    noise <- liftIO $ replicateM (width * height) $ do
-        [x, y] <- replicateM 2 (runRandomIO $ getRandomR (0, 1)) :: IO [Float]
+    noise <- liftIO . runRandomIO $ replicateM (width * height) $ do
+        x <- getRandomR (0, 1) :: RandomState Float
+        y <- getRandomR (0, 1) :: RandomState Float
         return (V3 (x * 2 - 1) (y * 2 - 1) 0)
     let size = V2 width height
     texture <- newTexture2D' "2D noise" RGB16F size 1 -- maxBound
@@ -165,8 +216,8 @@ generateNoiseTexture (width, height) = do
 
 generate2DNoiseTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => (Int, Int) -> ContextT ctx os m (Texture2D os (Format RFloat))
 generate2DNoiseTexture (width, height) = do
-    noise <- liftIO $ replicateM (width * height) $ do
-        runRandomIO $ (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: IO Float
+    noise <- liftIO . runRandomIO $ replicateM (width * height) $ do
+        (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: RandomState Float
     let size = V2 width height
     texture <- newTexture2D' "2D noise" R16F size 1
     writeTexture2D texture 0 0 size noise
@@ -174,8 +225,8 @@ generate2DNoiseTexture (width, height) = do
 
 generate3DNoiseTexture :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m) => (Int, Int, Int) -> ContextT ctx os m (Texture3D os (Format RFloat))
 generate3DNoiseTexture (width, height, depth) = do
-    noise <- liftIO $ replicateM (width * height * depth) $ do
-        runRandomIO $ (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: IO Float
+    noise <- liftIO . runRandomIO $ replicateM (width * height * depth) $ do
+        (\x -> x * 2 - 1) <$> getRandomR (0, 1) :: RandomState Float
     let size = V3 width height depth
     texture <- newTexture3D' "3D noise" R16F size 1
     writeTexture3D texture 0 0 size noise

@@ -3,10 +3,13 @@ module Graphics.Intersection
     , pointToPlaneDistance
     , sphereWithCameraFrustumIntersect
     , sphereWithFrustumIntersect
+    , rayWithCubeIntersect
+    , getRayCoordinate
     ) where
 
 import Control.Lens
 import Data.List
+import Data.Maybe
 import Linear
 import Data.Ord
 
@@ -85,3 +88,81 @@ sphereWithFrustumIntersect frustumCorners spherePosition sphereRadius = intersec
         | any (> sphereRadius) distances = Outside
         | maximum distances < -sphereRadius = Inside -- Could also intersect if the sphere is too big
         | otherwise = Intersect
+
+{-
+-- Note: ray direction is normalized
+rayWithCubeIntersect :: (V3 Float, V3 Float) -> (Float, V3 Float) -> Maybe Float
+rayWithCubeIntersect (orig, dir) (scale, lowerCorner) = if intersection then Just d else Nothing where
+    halfScale = scale / 2
+    center = lowerCorner + pure halfScale
+    vertices = [ lowerCorner + V3 dx dy dz | dx <- [0, scale], dy <- [0, scale], dz <- [0, scale] ]
+    nearestPointAlongTheRayTo p = orig + ((p - orig) `dot` dir) *^ dir
+    d = (center - orig) `dot` dir
+    inside p = let V3 dx dy dz = p - center in all ((<= halfScale) . abs) [dx, dy, dz]
+    intersection = any (inside . nearestPointAlongTheRayTo) vertices
+-}
+
+rayWithCubeIntersect :: (Floating a, Ord a) => (V3 a, V3 a) -> (a, V3 a) -> Maybe a
+rayWithCubeIntersect ray (scale, lowerCorner) =
+    let minBox = lowerCorner
+        maxBox = lowerCorner + pure scale
+    in  getRayCoordinate ray <$> hitBoundingBox (minBox, maxBox) ray
+
+{-
+p = orig + dir ^* (getRayCoordinate (orig, dir) p)
+-}
+getRayCoordinate :: (Floating a, Ord a) => (V3 a, V3 a) -> V3 a -> a
+getRayCoordinate (orig, dir) p = (p - orig) `dot` dir
+
+data Location = LocRight | LocLeft | LocMiddle deriving Eq
+
+{-
+Fast Ray-Box Intersection
+by Andrew Woo
+from "Graphics Gems", Academic Press, 1990
+-}
+hitBoundingBox :: (Floating a, Ord a) => (V3 a, V3 a) -> (V3 a, V3 a) -> Maybe (V3 a)
+hitBoundingBox box ray = fromList <$> hitPoint where
+    toList (V3 x y z) = [x, y, z]
+    fromList [x, y, z] = V3 x y z
+    fromList _ = undefined
+
+    minBox = toList (fst box)
+    maxBox = toList (snd box)
+    origin = toList (fst ray)
+    direction = toList (snd ray)
+
+    -- Find candidate planes; this loop can be avoided if rays cast all from the eye (assume perpsective view)
+    findCandidatePlane o min max
+        | o < min = (LocLeft, min, False)
+        | o > max = (LocRight, max, False)
+        | otherwise = (LocMiddle, undefined, True)
+
+    (quadrant, candidatePlane, inside) = unzip3 $ zipWith3 findCandidatePlane origin minBox maxBox
+
+    -- Ray origin inside bounding box
+    hitPoint = if and inside
+        then Just origin
+        else coord where
+            -- Calculate T distances to candidate planes
+            distanceToCandidatePlane q cp o d = if q /= LocMiddle && d /= 0
+                then (cp - o) / d
+                else -1
+            indexedMaxT = zip [0..] (zipWith4 distanceToCandidatePlane quadrant candidatePlane origin direction)
+
+            -- Get largest of the maxT's for final choice of intersection
+            (whichPlane, maxT_whichPlane) = maximumBy (comparing snd) indexedMaxT
+
+            -- Check final candidate actually inside box
+            filterCandidate i o d min max cp =
+                let c = o + maxT_whichPlane * d;
+                in  if whichPlane /= i
+                    then if c < min || c > max
+                        then Nothing
+                        else Just (o + maxT_whichPlane * d)
+                    else
+                        Just cp
+
+            coord = if maxT_whichPlane < 0
+                then Nothing
+                else sequence $ zipWith6 filterCandidate [0..] origin direction minBox maxBox candidatePlane

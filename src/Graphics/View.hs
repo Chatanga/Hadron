@@ -22,6 +22,8 @@ import Data.Tree
 import Data.Tree.Zipper
 import qualified Graphics.GPipe.Context.GLFW as GLFW
 
+import Common.Debug
+
 ------------------------------------------------------------------------------------------------------------------------
 
 data UI m a = UI

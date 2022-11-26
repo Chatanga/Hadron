@@ -7,6 +7,7 @@ module Graphics.Geometry
     , getUp
     , toWorld
     , lookAt'
+    , calculatePickingRay
     , createProjection
     --
     , noRotation
@@ -77,11 +78,25 @@ lookAt' eye center up =
         yd = -dot ya eye
         zd = dot za eye
 
+calculatePickingRay :: (Int, Int) -> Camera -> (Float, Float) -> (V3 Float, V3 Float)
+calculatePickingRay (w, h) camera cursor = ray where
+    (width, height) = (fromIntegral w, fromIntegral h)
+    projectionMat = perspective (cameraFov camera) (width / height) (cameraNear camera) (cameraFar camera)
+    origin = cameraPosition camera
+    cameraMat = lookAt
+        origin
+        (origin + getSight camera)
+        (getUp camera)
+    p = toWorld (width, height) cursor (cameraNear camera, cameraFar camera) projectionMat cameraMat ^._xyz
+    direction = normalize (p - cameraPosition camera)
+    ray = (origin, direction)
+
 createProjection :: ((Int, Int), (Int, Int)) -> Camera -> (M44 Float, M44 Float, V3 Float)
 createProjection bounds camera =
     let (_, (w, h)) = bounds
+        (width, height) = (fromIntegral w, fromIntegral h)
         -- FOV (y direction, in radians), Aspect ratio, Near plane, Far plane
-        projectionMat = perspective (cameraFov camera) (fromIntegral w / fromIntegral h) (cameraNear camera) (cameraFar camera)
+        projectionMat = perspective (cameraFov camera) (width / height) (cameraNear camera) (cameraFar camera)
         -- Eye, Center, Up
         cameraMat = lookAt
             cameraPos

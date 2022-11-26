@@ -100,8 +100,19 @@ display window worldRef contextRef guiRef bounds = do
         buffers = worldBuffers world
         normalBuffers = worldNormalBuffers world
         renderContext = sceneContextRenderContext context
+        cursorPosition = sceneContextCursorPosition context
 
-    newRenderContext <- renderContextRenderAction renderContext renderContext bounds camera cameras sun lights buffers normalBuffers gui
+    newRenderContext <- renderContextRenderAction renderContext
+        renderContext
+        bounds
+        camera
+        cameras
+        sun
+        lights
+        buffers
+        normalBuffers
+        gui
+        cursorPosition
 
     liftIO $ writeIORef contextRef (context{ sceneContextRenderContext = newRenderContext })
 
@@ -237,29 +248,24 @@ manipulate window worldRef contextRef guiRef _ (EventDrag dx dy) = do
     return $ Just (createScene window worldRef contextRef guiRef)
 
 -- Shot randomly colored fire balls with the mouse right button.
-manipulate window worldRef contextRef guiRef size (EventMouseButton b bs _) = do
+manipulate window worldRef contextRef guiRef size (EventMouseButton b bs _) | b == GLFW.MouseButton'2 = do
     world <- liftIO $ readIORef worldRef
     context <- liftIO $ readIORef contextRef
     let camera = fromJust (lookup (sceneContextCameraName context) (worldCameras world))
-    newFireBalls <- if b == GLFW.MouseButton'2 && bs == GLFW.MouseButtonState'Pressed
+
+    newFireBalls <- if bs == GLFW.MouseButtonState'Pressed
         then do
-            let (width, height) = size
-                projectionMat = perspective (cameraFov camera) (width / height) (cameraNear camera) (cameraFar camera)
-                cameraMat = lookAt'
-                    (cameraPosition camera)
-                    (cameraPosition camera + getSight camera)
-                    (getUp camera)
+            let (w, h) = size
                 cursor = sceneContextCursorPosition context
-                (V4 x y z _) = toWorld (width, height) (cameraNear camera, cameraNear camera) cursor projectionMat cameraMat
-                direction = normalize (V3 x y z - cameraPosition camera)
+                (_, direction) = calculatePickingRay (round w, round h) camera cursor
             color <- liftIO $ runRandomIO $ V3
                 <$> getRandomR (0, 1)
                 <*> getRandomR (0, 1)
                 <*> getRandomR (0, 1)
             return [FireBall (cameraPosition camera) direction color 0]
         else return []
+
     -- liftIO $ writeIORef worldRef world{ worldFireBalls = newFireBalls ++ worldFireBalls world }
-    liftIO $ writeIORef contextRef context
     return $ Just (createScene window worldRef contextRef guiRef)
 
 -- Store the cursor location.

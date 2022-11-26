@@ -1,4 +1,4 @@
-{-# language ScopedTypeVariables, TypeFamilies, FlexibleContexts #-}
+{-# language ScopedTypeVariables, TypeFamilies, FlexibleContexts, LambdaCase, AllowAmbiguousTypes #-}
 
 module Graphics.Polygonisation
     ( createPolygonisationRenderer
@@ -10,7 +10,7 @@ import Control.Applicative (liftA2)
 import Control.Category (Category((.)), id)
 import Control.Exception (assert)
 import Control.Lens ((&), (<&>), (^.), index)
-import Control.Monad ( forM_, replicateM, forM, foldM, when )
+import Control.Monad (forM_, replicateM, forM, foldM, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Exception
 import Data.Bits
@@ -18,8 +18,9 @@ import Data.Bifunctor (second)
 -- import qualified Deque.Strict as Deque
 import Data.Int (Int8, Int32)
 import Data.IORef (modifyIORef, newIORef, readIORef)
-import Data.List ((\\), partition, delete, foldl', find)
+import Data.List ((\\), partition, delete, foldl', find, sortOn, sortBy, minimumBy, maximumBy, zipWith4, zipWith6)
 import Data.Maybe
+import Data.Ord (comparing)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Word (Word8, Word16, Word32)
@@ -35,6 +36,7 @@ import Common.Debug
 import qualified Common.Random as Random
 
 import Graphics.Color
+import Graphics.CubeRoom
 import Graphics.Geometry
 import Graphics.Intersection
 import Graphics.MarchingCube
@@ -47,19 +49,48 @@ import Graphics.Texture
 {-
 GPipe translation of:
 https://developer.nvidia.com/gpugems/gpugems3/part-i-geometry/chapter-1-generating-complex-procedural-terrains-using-gpu
-
-What I’m missing:
-- Indexed (fixed size) array.
-- Bitwise operations to pack/unpack data efficiently.
 -}
 
 ----------------------------------------------------------------------------------------------------------------------
 
-forN :: (ShaderType a V) => (VInt, VInt) -> a -> (VInt -> a -> a) -> a
+allB :: Boolean c => (a -> c) -> [a] -> c
+allB f = foldl1 (&&*) . map f
+
+anyB :: Boolean c => (a -> c) -> [a] -> c
+anyB f = foldl1 (||*) . map f
+
+andB :: Boolean c => [c] -> c
+andB = foldl1 (&&*)
+
+orB :: Boolean c => [c] -> c
+orB = foldl1 (||*)
+
+maximumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
+maximumByB _ [] = errorWithoutStackTrace "maximumByB: empty list"
+maximumByB cmp xs = foldl1 maxBy xs where
+    maxBy x y = ifThenElse' (cmp x y ==* 1) x y
+
+minimumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
+minimumByB _ [] = errorWithoutStackTrace "minimumByB: empty list"
+minimumByB cmp xs = foldl1 minBy xs where
+    minBy x y = ifThenElse' (cmp x y ==* 1) y x
+
+comparingB :: (a -> S x Float) -> a -> a -> S x Int
+comparingB p x y = compareB (p x) (p y)
+
+compareB :: S x Float -> S x Float -> S x Int
+compareB x y = guardedB undefined
+    [ (x ==* y, 0)
+    , (x <=* y, -1)
+    ] 1
+
+forN :: (ShaderType a x) => (S x Int, S x Int) -> a -> (S x Int -> a -> a) -> a
 forN (i, n) x f = snd $ while
     (\(i, _) -> i <* n)
     (\(i, x) -> (i + 1, f i x))
     (i, x)
+
+-- ***
 
 scalePoint :: (Num a) => V4 a -> a -> V4 a
 scalePoint p s = point $ (p ^._xyz) ^* s
@@ -82,7 +113,7 @@ blockSize = 32
 
 -- Should be even for upscale adapting purposes.
 densityMargin :: Num a => a
-densityMargin = 6
+densityMargin = 4
 
 {- The margin is here to allow sampling outside the block when generating it and
 the +1 is here because the density is sampled on the cube corners of a block.
@@ -114,14 +145,29 @@ calculateDensity' _ _ offset p = density where
     p' = p + offset
     density = p'^._z / 16 + sin(p'^._x / 8) + cos(p'^._y / 12)
 
+calculateDensity'' :: forall x. Int -> [Sampler3D (Format RFloat)] -> V3 (S x Float) -> V3 (S x Float) -> S x Float
+calculateDensity'' _ _ offset p = density where
+    p' = p + offset
+    x = maxB 0 (minB 1 (p'^._x))
+    y = maxB 0 (minB 1 (p'^._y))
+    density =
+        ifThenElse' (x ==* 0 &&* y ==* 0) 8 -- 6
+        (ifThenElse' (x ==* 0 &&* y ==* 1) (-4) -- 4
+        (ifThenElse' (x ==* 1 &&* y ==* 0) 9 -- 1
+        (ifThenElse' (x ==* 1 &&* y ==* 1) (-3) -- (-5)
+        0)))
+
 {- Too naive… Can't really work. It does a good, if not perfect, job on average on a random landscape,
 but would occasionally make things worst (ironically when doing nothing would be perfectly fine).
 -}
-getAdaptiveDensity :: (V3 (S F Float) -> S F Float) -> V3 FFloat -> FFloat
-getAdaptiveDensity getRawDensity p =
+getAdaptiveDensity
+    :: (V3 FFloat -> FFloat)
+    -> V3 FFloat
+    -> FFloat
+getAdaptiveDensity getRawDensity (V3 x y z) =
     let
-        V3 x y z = p
-        split c = let m = mod'' c 2 in ifThenElse' (m <* 0.5) (c, c) (c - 1, c + 1)
+        -- densityTextureSize must be odd to have even coordinates at the borders
+        split c = let m = mod'' (c - densityMargin) 2 in ifThenElse' (m <* 0.5) (c, c) (c - 1, c + 1)
         (x1, x2) = split x
         (y1, y2) = split y
         (z1, z2) = split z
@@ -130,7 +176,7 @@ getAdaptiveDensity getRawDensity p =
         ifThenElse' (x1 /=* x2)
             (ifThenElse' (y1 /=* y2)
                 (ifThenElse' (z1 /=* z2)
-                    (mean 8 [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2], z <- [z1, z2] ])
+                    (mean 8 [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2], z <- [z1, z2] ]) -- Should not happen on the cube border.
                     (mean 4 [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2] ])
                 )
                 (ifThenElse' (z1 /=* z2)
@@ -149,6 +195,147 @@ getAdaptiveDensity getRawDensity p =
                 )
             )
 
+{- Remember this function is only called for points on the cube border, not inside.
+
+    upscale
+  |<------------->|
+    scale
+  |<----->|
+
+  [A]----(B)----[A]  Cases:
+   |      |      |     [A] -> Even coordinates, nothing to do.
+   |      |      |     (B) -> One odd coordinate, simple lerp.
+  (B)----<C>----(B)    <C> -> Two odd coordinates, complex case.
+   |      |      |
+   |      |      |   Note:
+  [A]----(B)----[A]    three odd coordinates are impossible on the cube border.
+-}
+getBetterAdaptiveDensity
+    :: Sampler1D (Format RInt)
+    -> Sampler1D (Format RGBAInt)
+    -> (V3 FFloat -> FFloat)
+    -> V3 FFloat
+    -> FFloat
+getBetterAdaptiveDensity aritySampler caseSampler getRawDensity (V3 x y z) =
+    let
+        -- isEven c = abs (mod'' (c - densityMargin) 2) <* 0.25
+        isEven c = fract' (abs (c - densityMargin) / 2) <* 0.25
+
+        -- densityTextureSize must be odd to have even coordinates at the borders
+        split c = ifThenElse' (isEven c) (c, c) (c - 1, c + 1)
+        (x1, x2) = split x
+        (y1, y2) = split y
+        (z1, z2) = split z
+
+        mean n ds = sum ds / n
+
+        getArity :: FInt -> FInt
+        getArity = texelFetch1D aritySampler (pure 0) 0
+
+        getCase :: FInt -> V4 FInt
+        getCase = texelFetch1D caseSampler (pure 0) 0
+
+        faceCaseFromDensities :: [FFloat] -> FInt
+        faceCaseFromDensities densities = foldl1 or' (zipWith (\i d -> ifB (d >=* 0) (fromIntegral ((2^(3 - i))::Int)) 0) [0..] densities)
+
+        pickFrom4 :: FInt -> [FFloat] -> FFloat -- GPipe eDSL definitely lacks arrays.
+        pickFrom4 i values = let [v0, v1, v2, v3] = values in caseB i
+            [ ((==* 0), v0)
+            , ((==* 1), v1)
+            , ((==* 2), v2)
+            , ((==* 3), v3)
+            ] 0
+
+        complexCase [d0, d1, d2, d3] = complexCase' [d0, d1, d3, d2]
+
+        complexCase' :: [FFloat] -> FFloat
+        complexCase' densities = v where
+            faceCase = faceCaseFromDensities densities
+            n = getArity faceCase
+            V4 i0 i1 i2 i3 = getCase faceCase
+            v = caseB n
+                [ ((==* 0), handleCase0)
+                , ((==* 2), handleCase2)
+                , ((==* 4), handleCase4)
+                ] 6.66
+
+            handleCase0 = handleCaseX -- 6.66 -- NaN
+
+            handleCase2 = (pickFrom4 i0 densities + pickFrom4 i1 densities) / 2
+
+            handleCase4 = v where
+                v11 = pickFrom4 i0 densities
+                v12 = pickFrom4 i1 densities
+                v21 = pickFrom4 i2 densities
+                v22 = pickFrom4 i3 densities
+                a = (v11 + v22) / 2
+                b = v11 / (v11 - v12) + v22 / (v22 - v21)
+                (a', b') = ifThenElse' (b <* 1)
+                    (a, b)
+                    ((v12 + v21) / 2, v12 / (v12 - v11) + v21 / (v21 - v22))
+                v = ifThenElse' (abs b' <* 0.0000001)
+                    ((v11 + v12 + v21 + v22) / 4)
+                    (a' - a' / b')
+
+            handleCaseX = v where
+                v11 = pickFrom4 0 densities
+                v12 = pickFrom4 1 densities
+                v21 = pickFrom4 2 densities
+                v22 = pickFrom4 3 densities
+                v = (v11 + v12 + v21 + v22) / 4
+
+    in  ifThenElse' (x1 /=* x2)
+            (ifThenElse' (y1 /=* y2)
+                (ifThenElse' (z1 /=* z2)
+                    (mean 8 [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2], z <- [z1, z2] ]) -- Should not happen on the cube border itself (but could happen inside the border)
+                    (complexCase [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2] ])
+                )
+                (ifThenElse' (z1 /=* z2)
+                    (complexCase [ getRawDensity (V3 x y z) | z <- [z1, z2], x <- [x1, x2] ])
+                    (mean 2 [ getRawDensity (V3 x y z) | x <- [x1, x2] ])
+                )
+            )
+            (ifThenElse' (y1 /=* y2)
+                (ifThenElse' (z1 /=* z2)
+                    (complexCase [ getRawDensity (V3 x y z) | y <- [y1, y2], z <- [z1, z2] ])
+                    (mean 2 [ getRawDensity (V3 x y z) | y <- [y1, y2] ])
+                )
+                (ifThenElse' (z1 /=* z2)
+                     (mean 2 [ getRawDensity (V3 x y z) | z <- [z1, z2] ])
+                    (getRawDensity (V3 x y z))
+                )
+            )
+
+{-
+   0             1
+  [A]----(B)----[A]
+   |      |      |
+   |      |      |
+  (B)----<C>----(B)
+   |      |      |
+   |      |      |
+  [A]----(B)----[A]
+   3             2
+-}
+--                         0      1      2      3
+generateCaseUpscaleList [False, False, False, False] = []
+generateCaseUpscaleList [False, False, False, True] = [0, 2]
+generateCaseUpscaleList [False, False, True, False] = [1, 3]
+generateCaseUpscaleList [False, False, True, True] = [1, 2, 3, 0]
+generateCaseUpscaleList [False, True, False, False] = [0, 2]
+generateCaseUpscaleList [False, True, False, True] = [] -- S
+generateCaseUpscaleList [False, True, True, False] = [0, 1, 2, 3]
+generateCaseUpscaleList [False, True, True, True] = [1, 3]
+generateCaseUpscaleList [True, False, False, False] = [1, 3]
+generateCaseUpscaleList [True, False, False, True] = [0, 1, 2, 3]
+generateCaseUpscaleList [True, False, True, False] = [] -- S
+generateCaseUpscaleList [True, False, True, True] = [0, 2]
+generateCaseUpscaleList [True, True, False, False] = [1, 2, 3, 0]
+generateCaseUpscaleList [True, True, False, True] = [1, 3]
+generateCaseUpscaleList [True, True, True, False] = [2, 0]
+generateCaseUpscaleList [True, True, True, True] = []
+generateCaseUpscaleList _ = error "aboveness must contains data for 4 vertices"
+
 {- Create a renderer to fill the provided 3D density texture by sampling the
 density function at the given offset and scale. The provided noise textures
 are used by the density function.
@@ -158,7 +345,7 @@ are used by the density function.
 -}
 createFillDensityRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m)
     => Buffer os (Uniform (B3 Float, B Float)) -- ^ A UBO storing the offset and scale for the density texture to fill.
-    -> Texture3D os (Format RFloat) -- ^ A 3x3 3D texture storing a boolean (as a float) indicating if the adjacent block in the corresponding direction as a greater scale (by 1 if any).
+    -> Texture3D os (Format RFloat) -- ^ A 3x3 3D texture storing a boolean (as a float) indicating if the adjacent block in the corresponding direction has a greater scale (by 2 if any).
     -> Texture3D os (Format RFloat) -- ^ The 3D texture to fill by sampling the global density function (cf. calculateDensity).
     -> [Texture3D os (Format RFloat)] -- ^ An array of noise textures to feed to the density function.
     -> ContextT ctx os m (Render os ())
@@ -168,6 +355,15 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
 
     heightBuffer :: Buffer os (B Float) <- newBuffer densityTextureSize
     writeBuffer heightBuffer 0 (fromIntegral <$> [0 .. densityTextureSize - 1])
+
+    let caseUpscaleLists = map generateCaseUpscaleList (generateBoolCases 4)
+        toPaddedCaseContent caseUpscaleList = let [i0, i1, i2, i3] = take 4 (caseUpscaleList ++ repeat 0) in fromIntegral <$> V4 i0 i1 i2 i3
+
+    arityTexture :: Texture1D os (Format RInt) <- newTexture1D R8I 16 1
+    writeTexture1D arityTexture 0 0 16 (map (fromIntegral . length) caseUpscaleLists :: [Int32])
+
+    caseTexture :: Texture1D os (Format RGBAInt) <- newTexture1D RGBA8I 16 1
+    writeTexture1D caseTexture 0 0 16 (map toPaddedCaseContent caseUpscaleLists :: [V4 Int8])
 
     shader :: CompiledShader os (Image (Format RFloat), PrimitiveArray Triangles (B Float, B2 Float))  <- compileShader $ do
 
@@ -198,24 +394,71 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
         fs <- generateAndRasterize rasterOptions maxVertices gs'
             <&> withRasterizedInfo (\h info -> let V4 x y _ _ = rasterizedFragCoord info in V3 x y h)
 
+        aritySampler <- newSampler1D (const (arityTexture, SamplerNearest, (ClampToEdge, undefined)))
+        caseSampler <- newSampler1D (const (caseTexture, SamplerNearest, (ClampToEdge, undefined)))
+
         -- Pixel centers are located at half-pixel centers and need to be shifted (z is fine).
         -- (cf. https://registry.khronos.org/OpenGL-Refpages/gl4/html/gl_FragCoord.xhtml)
-        let fs' = getDensity' . (\p -> p - V3 0.5 0.5 0) <$> fs
+        let fs' = getDensity'' . (\p -> p - V3 0.5 0.5 0) <$> fs
+
+            getDensity'' :: V3 FFloat -> FFloat
+            getDensity'' p =
+                let upscale = getUpscale p
+                in  ifThenElse' (upscale >* 0.5)
+                    (getBetterAdaptiveDensity aritySampler caseSampler getDensity p)
+                    (getDensity p)
 
             getDensity' :: V3 FFloat -> FFloat
             getDensity' p =
-                let upscale = texelFetch3D neighbourUpscaleSampler (pure 0) 0 (toUnitaryVector p)
+                let upscale = getUpscale p
                 in  ifThenElse' (upscale >* 0.5)
                     (getAdaptiveDensity getDensity p)
                     (getDensity p)
 
-            getDensity :: V3 (S F Float) -> S F Float
+            getDensity :: V3 FFloat -> FFloat
             getDensity = calculateDensity 7 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^)
 
-            toUnitaryVector :: V3 FFloat -> V3 FInt
-            toUnitaryVector (V3 x y z) =
-                let toUnitary c = ifThenElse' (c <* densityMargin + 0.5) 0 (ifThenElse' (c >* densityTextureSize - densityMargin - 0.5) 2 1)
-                in  V3 (toUnitary x) (toUnitary y) (toUnitary z)
+            getUpscale' :: V3 FFloat -> ColorSample F RFloat
+            getUpscale' p = texelFetch3D neighbourUpscaleSampler (pure 0) 0 (toDiscreteLocationVector p + V3 1 1 1)
+
+            getUpscale :: V3 FFloat -> ColorSample F RFloat
+            getUpscale p =
+                let dl = toDiscreteLocationVector p
+                    getIt = maximumByB (comparingB id) . map (texelFetch3D neighbourUpscaleSampler (pure 0) 0 . (+ V3 1 1 1))
+                    (a, b) = (-1, 1)
+                in  caseB dl
+                        [{- ((==* V3 a a a), getIt [dl, V3 a a 0, V3 a 0 0, V3 0 a 0, V3 a 0 a, V3 0 0 a, V3 0 a a])
+                        , ((==* V3 a a b), getIt [dl, V3 a a 0, V3 a 0 0, V3 0 a 0, V3 a 0 b, V3 0 0 b, V3 0 a b])
+                        , ((==* V3 a b a), getIt [dl, V3 a b 0, V3 a 0 0, V3 0 b 0, V3 a 0 a, V3 0 0 a, V3 0 b a])
+                        , ((==* V3 a b b), getIt [dl, V3 b b 0, V3 a 0 0, V3 0 b 0, V3 a 0 b, V3 0 0 b, V3 0 b b])
+                        , ((==* V3 b a a), getIt [dl, V3 b a 0, V3 b 0 0, V3 0 a 0, V3 b 0 a, V3 0 0 a, V3 0 a a])
+                        , ((==* V3 b a b), getIt [dl, V3 b a 0, V3 b 0 0, V3 0 a 0, V3 b 0 a, V3 0 0 a, V3 0 a a])
+                        , ((==* V3 b b a), getIt [dl, V3 b b 0, V3 b 0 0, V3 0 b 0, V3 b 0 a, V3 0 0 a, V3 0 b a])
+                        , ((==* V3 b b b), getIt [dl, V3 b b 0, V3 b 0 0, V3 0 b 0, V3 b 0 b, V3 0 0 b, V3 0 b b])
+                        --
+                        ,-} ((==* V3 a a 0), getIt [dl, V3 a 0 0, V3 0 a 0])
+                        , ((==* V3 a b 0), getIt [dl, V3 a 0 0, V3 0 b 0])
+                        , ((==* V3 b a 0), getIt [dl, V3 b 0 0, V3 0 a 0])
+                        , ((==* V3 b b 0), getIt [dl, V3 b 0 0, V3 0 b 0])
+                        --
+                        , ((==* V3 a 0 a), getIt [dl, V3 a 0 0, V3 0 0 a])
+                        , ((==* V3 a 0 b), getIt [dl, V3 a 0 0, V3 0 0 b])
+                        , ((==* V3 b 0 a), getIt [dl, V3 b 0 0, V3 0 0 a])
+                        , ((==* V3 b 0 b), getIt [dl, V3 b 0 0, V3 0 0 b])
+                        --
+                        , ((==* V3 0 a a), getIt [dl, V3 0 a 0, V3 0 0 a])
+                        , ((==* V3 0 a b), getIt [dl, V3 0 a 0, V3 0 0 b])
+                        , ((==* V3 0 b a), getIt [dl, V3 0 b 0, V3 0 0 a])
+                        , ((==* V3 0 b b), getIt [dl, V3 0 b 0, V3 0 0 b])
+                        ] (getIt [dl])
+
+            toDiscreteLocationVector :: V3 FFloat -> V3 FInt
+            toDiscreteLocationVector p =
+                let toUnitary c = guardedB undefined
+                        [ (c <* densityMargin + 0.5, -1)
+                        , (c <* densityTextureSize - densityMargin - 1.5, 0)
+                        ] 1
+                in  toUnitary <$> p
 
         draw (const NoBlending) fs' $
             drawColor (\env -> (fst env, True, False))
@@ -247,7 +490,7 @@ generateBoolCases i = [ x:xs | x <- [False, True], xs <- generateBoolCases (i - 
 
 -- 2^(7-i) benefits of being statically evaluated.
 cellCaseFromDensities :: [VFloat] -> VInt
-cellCaseFromDensities densities= foldl1 or' (zipWith (\i d -> ifB (d >* 0) (fromIntegral ((2^(7-i))::Int)) 0) [0..] densities)
+cellCaseFromDensities densities= foldl1 or' (zipWith (\i d -> ifB (d >* 0) (fromIntegral ((2^(7-i))::Int)) 0) [0..] densities) -- TODO (length densities - 1 - i)
 
 instance Bits' Int where
     and' = (.&.)
@@ -268,6 +511,130 @@ decode sizes compositeValue = zipWith extract positions sizes where
     positions = map fromIntegral $ scanl (+) 0 (init sizes)
     extract position size = and' (shiftR' compositeValue position) (2^size-1)
 
+decodeInHaskell :: (Num a, Bits a) => [Int] -> a -> [a]
+decodeInHaskell sizes compositeValue = zipWith extract positions sizes where
+    positions = map fromIntegral $ scanl (+) 0 (init sizes)
+    extract position size = (.&.) (shiftR compositeValue position) (2^size-1)
+
+isRayWithCubeIntersect :: (V3 VFloat, V3 VFloat) -> (VFloat, V3 VFloat) -> VBool
+isRayWithCubeIntersect (orig, dir) (scale, lowerCorner) =
+    let minBox = lowerCorner
+        maxBox = lowerCorner + pure scale
+    in  boundingBoxHit (minBox, maxBox) (orig, dir)
+
+boundingBoxHit :: (V3 VFloat, V3 VFloat) -> (V3 VFloat, V3 VFloat) -> VBool
+boundingBoxHit box ray = hit where
+    dims = [0, 1, 2] :: [VInt]
+
+    toList (V3 x y z) = [x, y, z]
+    fromList [x, y, z] = V3 x y z
+    fromList _ = undefined
+
+    minBox = toList (fst box)
+    maxBox = toList (snd box)
+    origin = toList (fst ray)
+    direction = toList (snd ray)
+
+    eLocRight = 0
+    eLocLeft = 1
+    eLocMiddle = 2
+
+    -- Find candidate planes; this loop can be avoided if rays cast all from the eye (assume perpsective view)
+    findCandidatePlane :: VFloat -> VFloat -> VFloat -> (VInt, VFloat, S V Bool)
+    findCandidatePlane o min max = guardedB undefined
+        [ (o <* min, (eLocLeft, min, false))
+        , (o >* max, (eLocRight, max, false))
+        ] (eLocMiddle, -1, true)
+
+    (quadrant, candidatePlane, inside) = unzip3 $ zipWith3 findCandidatePlane origin minBox maxBox
+
+    -- Ray origin inside bounding box
+    hit = ifThenElse' (andB inside)
+        true
+        coord where
+            -- Calculate T distances to candidate planes
+            distanceToCandidatePlane q cp o d = ifThenElse' (q /=* eLocMiddle &&* d /=* 0)
+                ((cp - o) / d)
+                (-1)
+            indexedMaxT = zip dims (zipWith4 distanceToCandidatePlane quadrant candidatePlane origin direction)
+
+            -- Get largest of the maxT's for final choice of intersection
+            (whichPlane, maxT_whichPlane) = maximumByB (comparingB snd) indexedMaxT
+
+            -- Check final candidate actually inside box
+            filterCandidate i o d min max cp =
+                let c = o + maxT_whichPlane * d;
+                in  ifThenElse' (whichPlane /=* i)
+                        (min <=* c &&* c <=* max)
+                        true
+
+            coord = ifThenElse' (maxT_whichPlane <* 0)
+                false
+                (andB $ zipWith6 filterCandidate dims origin direction minBox maxBox candidatePlane)
+
+createGenerateIntersectionRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m)
+    => Window os RGBAFloat Depth
+    -> Buffer os (Uniform (B3 Float, B Float))
+    -> Buffer os (Uniform (B3 Float, B3 Float))
+    -> Texture3D os (Format RFloat)
+    -> [Texture3D os (Format RFloat)]
+    -> ContextT ctx os m (Buffer os (B Word32, V2 (B4 Float)) -> Render os ())
+createGenerateIntersectionRenderer window offsetAndScaleBuffer rayBuffer densityTexture noiseTextures = do
+    -- We consider the cells in the block.
+    let cellCount = blockSize ^ 3
+
+    -- All the 'cellCount' cell coordinates in the block.
+    cellPositionBuffer :: Buffer os (B3 Int8) <- newBuffer cellCount
+    writeBuffer cellPositionBuffer 0 [ fromIntegral <$> V3 x y z | x <- [0 .. blockSize - 1], y <- [0 .. blockSize - 1], z <- [0 .. blockSize - 1] ]
+
+    -- All positions of the not empty intersecting cubes combined with their interface cell cases [1-254], packing them as 'z8_y8_x8_case8'.
+
+    listIntersectingCells :: CompiledShader os (PrimitiveArray Points (B3 Int8), Buffer os (B Word32, V2 (B4 Float)))  <- compileShader $ do
+
+        densitySampler <- newSampler3D (const (densityTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+
+        ps :: primitiveStream Points (V3 VInt) <- toPrimitiveStream fst
+
+        gs :: GeometryStream (Geometry Points (V3 VInt)) <- geometrize ps
+
+        (offset, scale) <- getUniform (const (offsetAndScaleBuffer, 0))
+        (orig, dir) <- getUniform (const (rayBuffer, 0))
+
+        let makeMarks :: Geometry Points (V3 VInt) -> GGenerativeGeometry Points (VWord, V2 (V4 VFloat))
+            makeMarks (Point p) = marks
+                where
+                    getDensity :: V3 VInt -> VFloat
+                    getDensity = texelFetch3D densitySampler (pure 0) 0 . (+ pure densityMargin)
+
+                    densities :: [VFloat]
+                    densities = map (getDensity . (p +)) cube
+
+                    cellCase = cellCaseFromDensities densities
+
+                    intersectWithRay :: VBool
+                    intersectWithRay =
+                        let lowerCorner = offset + (toFloat <$> p) ^* scale
+                        in  isRayWithCubeIntersect (orig, dir) (scale, lowerCorner)
+
+                    marks :: GGenerativeGeometry Points (VWord, V2 (V4 VFloat))
+                    marks = ifThenElse (cellCase /=* 0 &&* cellCase /=* 255 &&* intersectWithRay) emitMark id generativePoints
+
+                    emitMark :: GGenerativeGeometry Points (VWord, V2 (V4 VFloat)) -> GGenerativeGeometry Points (VWord, V2 (V4 VFloat))
+                    emitMark =
+                        let V3 x y z = toWord <$> p
+                            c = toWord cellCase
+                            z8_y8_x8_case8 = encode [8, 8, 8, 8] [z, y, x, c]
+                            [d0, d1, d2, d3, d4, d5, d6, d7] = densities
+                        in  endPrimitive . emitVertex (z8_y8_x8_case8, V2 (V4 d0 d1 d2 d3) (V4 d4 d5 d6 d7))
+
+            gs' :: GeometryStream (GGenerativeGeometry Points (VWord, V2 (V4 VFloat))) = makeMarks <$> gs
+
+        let maxVertices = 1
+        drawNothing window snd Queried maxVertices gs'
+
+    return $ \intersectionBuffer -> do
+        positions <- toPrimitiveArray PointList <$> newVertexArray cellPositionBuffer
+        listIntersectingCells (positions, intersectionBuffer)
 
 {- Create a renderer to generate the block at the given offset and scale. The provided noise textures
 are used by the density function.
@@ -505,8 +872,8 @@ createGenerateBlockRenderer window offsetAndScaleBuffer densityTexture noiseText
     arityTexture :: Texture1D os (Format RInt) <- newTexture1D R8I 256 1
     writeTexture1D arityTexture 0 0 256 (map (fromIntegral . length) protoTriangleLists :: [Int32])
 
-    casesTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 maxCellTriangleCount 256) 1
-    writeTexture2D casesTexture 0 0 (V2 maxCellTriangleCount 256) (concatMap toPaddedCaseContent protoTriangleLists)
+    caseTexture :: Texture2D os (Format RGBInt) <- newTexture2D RGB8I (V2 maxCellTriangleCount 256) 1
+    writeTexture2D caseTexture 0 0 (V2 maxCellTriangleCount 256) (concatMap toPaddedCaseContent protoTriangleLists)
 
     let edgeToSplatCoords :: [(V3 Int, Int)]
         edgeToSplatCoords =
@@ -542,7 +909,7 @@ createGenerateBlockRenderer window offsetAndScaleBuffer densityTexture noiseText
     generateIndices :: CompiledShader os (Buffer os (B Word32), (Buffer os (B Word32), PrimitiveArray Points (B Word32)))  <- compileShader $ do
 
         aritySampler <- newSampler1D (const (arityTexture, SamplerNearest, (ClampToEdge, undefined)))
-        caseSampler <- newSampler2D (const (casesTexture, SamplerNearest, (pure ClampToEdge, undefined)))
+        caseSampler <- newSampler2D (const (caseTexture, SamplerNearest, (pure ClampToEdge, undefined)))
         edgeToSplatCoordsSampler <- newSampler1D (const (edgeToSplatCoordsTexture, SamplerNearest, (ClampToEdge, undefined)))
         splatVertexIdsSampler <- newSampler3D (const (splatVertexIdsTexture, SamplerNearest, (pure ClampToEdge, undefined)))
 
@@ -619,8 +986,10 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
 
     noiseTexture :: Texture2D os (Format RFloat) <- generate2DNoiseTexture (16, 16)
 
+    {-
     Just altMap <- loadImage "data/altmap.tga"
     generateTexture2DMipmap altMap
+    -}
 
     {-
     Just mosaicDiffuseTexture <- loadImage "data/TILEABLE_RED_MOSAIC_TEXTURE.jpg"
@@ -657,7 +1026,9 @@ createIndexedBlockRenderer window projectionBuffer fogBuffer sunBuffer = do
         sun :: DirectionLightS F <- getUniform (const (sunBuffer, 0))
 
         noiseSampler <- newSampler2D (const (noiseTexture, SamplerFilter Linear Linear Linear (Just 4), (pure Mirror, undefined)))
+        {-
         altMapSampler <- newSampler2D (const (altMap, SamplerFilter Linear Linear Linear (Just 4), (pure Mirror, undefined)))
+        -}
 
         {-
         mosaicDiffuseSampler <- newSampler2D (const (mosaicDiffuseTexture, SamplerFilter Linear Linear Linear (Just 4), (pure Repeat, undefined)))
@@ -730,7 +1101,7 @@ createBlockOutlinesRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, 
     -> Buffer os (Uniform (V4 (B4 Float), V4 (B4 Float), B3 Float))
     -> Buffer os (B Float, B3 Float)
     -> ContextT ctx os m (ViewPort -> Int -> Render os ())
-createBlockOutlinesRenderer window projectionBuffer offsetBuffer = do
+createBlockOutlinesRenderer window projectionBuffer outlineBuffer = do
 
     blockOutlineBuffer :: Buffer os (B3 Float) <- newBuffer (length cube)
     writeBuffer blockOutlineBuffer 0 cube
@@ -764,7 +1135,7 @@ createBlockOutlinesRenderer window projectionBuffer offsetBuffer = do
             <$> newIndexArray blockOutlineIndexBuffer Nothing
             <*> return (,)
             <*> newVertexArray blockOutlineBuffer
-            <*> (takeVertices count <$> newVertexArray offsetBuffer)
+            <*> (takeVertices count <$> newVertexArray outlineBuffer)
         shader (viewport, blockOutline)
 
 createGridRenderer :: forall ctx os m. (ContextHandler ctx, MonadIO m, MonadException m)
@@ -807,8 +1178,8 @@ createGridRenderer window projectionBuffer fogBuffer = do
                 V2 gx' gy' = abs (fract' (coord' - 0.5) - 0.5) / (fwidth <$> coord')
                 -- Change color when coord' and coord' match.
                 (V3 r g b) =
-                    ifThenElse' (abs x <* 0.5) (V3 1 0 0)
-                        (ifThenElse' (abs y <* 0.5) (V3 0 1 0)
+                    ifThenElse' (abs x <* 0.5) (V3 0 1 0) -- ortho to X = Y => green
+                        (ifThenElse' (abs y <* 0.5) (V3 1 0 0) -- ortho to Y = Z => red
                             (ifThenElse' (gx >* (gx' - 0.5) ||* gy >* (gy' - 0.5))
                                 (pure 0.1)
                                 (pure 0.3)))
@@ -879,6 +1250,9 @@ bitsetToWord :: [Bool] -> Word32
 bitsetToWord bx = assert (length bx <= 32) $
     sum (zipWith (\b i -> if b then 1 `shiftL` i else 0) bx [0..])
 
+intToWord :: Word32 -> [Bool]
+intToWord n = map (\i -> n .&. (1 `shiftL` i) > 0) (reverse [0..7])
+
 {- Create a renderer for an infinite "landscape" produced by the calculateDensity
 function.
 
@@ -906,12 +1280,38 @@ createPolygonisationRenderer window = do
         newBuffer blockBufferSize <*>
         newBuffer indexBufferSize
 
+    intersectionBuffer :: Buffer os (B Word32, V2 (B4 Float)) <- newBuffer $ blockSize^3
+
     offsetAndScaleBuffer :: Buffer os (Uniform (B3 Float, B Float)) <- newBuffer 1
     neighbourUpscaleTexture :: Texture3D os (Format RFloat) <- newTexture3D R8 (pure 3) 1
     densityTexture :: Texture3D os (Format RFloat) <- newTexture3D R16F (pure densityTextureSize) 1
     noiseTextures :: [Texture3D os (Format RFloat)] <- take 6 . cycle <$> replicateM 3 (generate3DNoiseTexture (16, 16, 16))
 
     fillDensityTexture <- createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTexture noiseTextures
+
+    rayBuffer :: Buffer os (Uniform (B3 Float, B3 Float)) <- newBuffer 1
+
+    generateIntersection <- createGenerateIntersectionRenderer window offsetAndScaleBuffer rayBuffer densityTexture noiseTextures
+
+    let fillIntersectionBuffer scale neighbourUpscales offset ray = do
+            writeBuffer offsetAndScaleBuffer 0 [(offset, scale)]
+            writeBuffer rayBuffer 0 [ray]
+            writeTexture3D neighbourUpscaleTexture 0 0 (pure 3) neighbourUpscales
+            render $ fillDensityTexture >> generateIntersection intersectionBuffer
+            Right count <- liftIO $ feedbackBufSize (undefined :: Points) intersectionBuffer
+            let decodeValue (z8_y8_x8_case8, V2 (V4 d0 d1 d2 d3) (V4 d4 d5 d6 d7)) =
+                    let [z, y, x, c] = decodeInHaskell [8, 8, 8, 8] z8_y8_x8_case8
+                        p = offset + (fromIntegral <$> V3 x y z) ^* scale
+                        densities = [d0, d1, d2, d3, d4, d5, d6, d7]
+                    in ((scale, p), (intToWord c, densities))
+            intersections <- map decodeValue <$> readBuffer intersectionBuffer 0 (fromIntegral count)
+            let intersectionsAhead = intersections
+                    & zip (map (getRayCoordinate ray . snd . fst) intersections)
+                    & filter ((> 0) . fst) -- Unnecessary?
+            return $ if null intersectionsAhead
+                then Nothing
+                else Just (snd (minimumBy (comparing fst) intersectionsAhead))
+
     generateBlock <- createGenerateBlockRenderer window offsetAndScaleBuffer densityTexture noiseTextures
 
     let fillIndexedBlock scale neighbourUpscales offset blockBuffer indexBuffer = do
@@ -931,9 +1331,12 @@ createPolygonisationRenderer window = do
     blockOutlinesRenderer <- createBlockOutlinesRenderer window projectionBuffer outlineBuffer
     gridRenderer <- createGridRenderer window projectionBuffer fogBuffer
 
+    cellBuffer :: Buffer os (Uniform (B3 Float, B Word32)) <- newBuffer 1
+    cubePreRenderer <- createCubePreRenderer window projectionBuffer fogBuffer sunBuffer
+
     -- skyBoxRenderer <- createSkyBoxRenderer window projectionBuffer
 
-    let renderIt cache _ bounds camera cameras sun lights _ _ gui = do
+    let renderIt oldPickingRay cache _ bounds camera cameras sun lights _ _ gui cursor = do
             let ((x, y), (w, h)) = bounds
                 debug = guiDebug gui
                 fogDensity = guiFogDensity gui
@@ -941,27 +1344,60 @@ createPolygonisationRenderer window = do
             writeBuffer fogBuffer 0 [Fog (point skyBlue) 100 1000 fogDensity]
             writeBuffer sunBuffer 0 [sun]
 
-            let otherCamera = head (filter (/= camera) cameras)
+            let firstCamera = head cameras
+                otherCamera = head (filter (/= camera) cameras)
 
             writeBuffer projectionBuffer 0
                 [ createProjection bounds camera
                 , createProjection bounds otherCamera
                 ]
 
-            let blocks = addNeighbourUpscaleToBlocks (take poolSize (listVisibleBlocks bounds (head cameras)))
+            let blocks = take poolSize (listVisibleBlocks bounds firstCamera)
 
-            let generateIndexedBlock (neighbourUpscales, (scale, offset)) (blockBuffer, indexBuffer) = do
+                pickingRay = if camera == firstCamera || true
+                    then Just (calculatePickingRay (w, h) camera cursor)
+                    else oldPickingRay
+
+                generateIntersectionBlock _ _ [] = return Nothing
+                generateIntersectionBlock i ray ((neighbourUpscales, (scale, offset)) : pbs) = do
+                    pickingInfo <- fillIntersectionBuffer (scale / blockSize) neighbourUpscales offset ray
+                    if isNothing pickingInfo
+                        then generateIntersectionBlock (i + 1) ray pbs
+                        else do
+                            -- liftIO $ putStrLn $ "Picked " ++ show i ++ "th cube"
+                            return pickingInfo
+
+            -- let pickBlocks ray = map fst $ sortBy (comparing snd) $ mapMaybe (\b -> (,) b <$> rayWithCubeIntersect ray b) blocks
+            let pickBlocks ray = map fst $ mapMaybe (\b -> (,) b <$> rayWithCubeIntersect ray b) blocks
+                distanceToOrigin (o, _) (_, (s, p)) = let blockCenter = p + pure (s / 2) in distance p o
+            maybeCubeRenderer <- case pickingRay of
+                Just ray -> do
+                    generateIntersectionBlock 1 ray (sortOn (distanceToOrigin ray) (addNeighbourUpscaleToBlocks (pickBlocks ray))) >>= \case
+                        Just cellPositionAndCaseWithDensities -> do
+                            cubeRenderer <- cubePreRenderer cellPositionAndCaseWithDensities
+                            return $ Just cubeRenderer
+                        Nothing -> return Nothing
+                Nothing -> return Nothing
+
+            let blocksWithUpscale = addNeighbourUpscaleToBlocks blocks
+                generateIndexedBlock (neighbourUpscales, (scale, offset)) (blockBuffer, indexBuffer) = do
                     size <- fillIndexedBlock (scale / blockSize) neighbourUpscales offset blockBuffer indexBuffer
                     return $ if size > 0 then Just (blockBuffer, indexBuffer) else Nothing
 
             -- We cache the generated blocks (vertices + indices), using their bounding box (and neighbour upscales now) as a key.
             (cache', (blocks', indexedBlockBuffers)) <- second unzip <$> foldM
                 (\(c, ds) k -> cacheLookup generateIndexedBlock c k >>= \(c', d) -> return (c', maybe ds (\d -> (k, d) : ds) d))
-                (cacheUpdatePreserve cache blocks, [])
-                blocks
+                (cacheUpdatePreserve cache blocksWithUpscale, [])
+                blocksWithUpscale
 
+            let highlightedBlocks = map snd blocks'
+            {-
+            let highlightedBlocks = case pickingRay of
+                    Just ray -> take 6 (pickBlocks ray)
+                    Nothing -> []
+            -}
             when debug $
-                writeBuffer outlineBuffer 0 (map snd blocks')
+                writeBuffer outlineBuffer 0 highlightedBlocks
 
             render $ do
                 clearWindowColor window (point skyBlue)
@@ -970,17 +1406,20 @@ createPolygonisationRenderer window = do
                 -- skyBoxRenderer viewPort
                 forM_ indexedBlockBuffers $ \indexedBlockBuffer ->
                     indexedBlockRenderer (viewPort, indexedBlockBuffer)
+                when (isJust maybeCubeRenderer) $ do
+                    fromJust maybeCubeRenderer viewPort
                 when debug $ do
                     frustumRenderer viewPort
-                    blockOutlinesRenderer viewPort (length blocks')
+                    blockOutlinesRenderer viewPort (length highlightedBlocks)
                     -- gridRenderer viewPort
 
-            return $ RenderContext Nothing (renderIt cache')
+            return $ RenderContext Nothing (renderIt pickingRay cache')
 
-    return $ RenderContext Nothing (renderIt (newCache pool))
+    return $ RenderContext Nothing (renderIt Nothing (newCache pool))
 
 -- ***
 
+-- Break block ordering!
 addNeighbourUpscaleToBlocks
     :: [(Float, V3 Float)] -- ^ A list of [(scale, lower corner)].
     -> [([Float], (Float, V3 Float))] -- ^ A list of [(neighbourUpscales, (scale, lower corner))].
@@ -992,9 +1431,9 @@ addNeighbourUpscaleToBlocks blocks = f maxScale [] blocks where
     neighbourUpscaleOffsets = [ V3 dx dy dz | dz <- [-1, 0, 1], dy <- [-1, 0, 1], dx <- [-1, 0, 1] ]
 
     isPointInsideCube c (s, p) =
-        c^._x > p^._x && c^._x < p^._x + s &&
-        c^._y > p^._y && c^._y < p^._y + s &&
-        c^._z > p^._z && c^._z < p^._z + s
+        p^._x < c^._x && c^._x < p^._x + s &&
+        p^._y < c^._y && c^._y < p^._y + s &&
+        p^._z < c^._z && c^._z < p^._z + s
 
     f _ _ [] = []
     f scale biggerBlocks blocks = map enhance sameBlocks ++ f (scale / 2) sameBlocks smallerBlocks where
@@ -1075,7 +1514,7 @@ listVisibleBlocks bounds camera = allBlocks where
             r = pure (fromIntegral s' / 2)
             cubeIntersectFrustum p = frustumIntersector (p + r) (norm r) /= Outside
             (farestBlocks, nearestBlocks) = partition (\b -> distanceToSight (center b) > f') bs
-            subdivide b = [ b + (fromIntegral <$> (s' *^ V3 x y z)) | x <-[0..1], y <-[0..1], z <-[0..1] ]
+            subdivide b = [ b + (fromIntegral <$> (s' *^ V3 x y z)) | x <-[0, 1], y <-[0, 1], z <-[0, 1] ]
             subBlocks = filter cubeIntersectFrustum (concatMap subdivide nearestBlocks)
         in  divide (depth - 1) s' f' subBlocks ++ withSize s farestBlocks
 
