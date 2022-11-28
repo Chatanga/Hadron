@@ -24,7 +24,7 @@ runRandom' :: Int -> RandomState a -> a
 runRandom' _ r = evalState r $ mkStdGen 0
 
 runRandomIO :: RandomState a -> IO a
-runRandomIO r = randomIO <&> flip runRandom' r
+runRandomIO r = randomIO <&> flip runRandom r
 
 getRandom :: Random a => RandomState a
 getRandom = do

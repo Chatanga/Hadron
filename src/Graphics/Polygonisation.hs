@@ -65,6 +65,12 @@ andB = foldl1 (&&*)
 orB :: Boolean c => [c] -> c
 orB = foldl1 (||*)
 
+maximumB :: (IfB a, OrdB a) => [a] -> a
+maximumB = foldl1 maxB
+
+minimumB :: (IfB a, OrdB a) => [a] -> a
+minimumB = foldl1 minB
+
 maximumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
 maximumByB _ [] = errorWithoutStackTrace "maximumByB: empty list"
 maximumByB cmp xs = foldl1 maxBy xs where
@@ -424,7 +430,7 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
             getUpscale :: V3 FFloat -> ColorSample F RFloat
             getUpscale p =
                 let dl = toDiscreteLocationVector p
-                    getIt = maximumByB (comparingB id) . map (texelFetch3D neighbourUpscaleSampler (pure 0) 0 . (+ V3 1 1 1))
+                    getIt = maximumB . map (texelFetch3D neighbourUpscaleSampler (pure 0) 0 . (+ V3 1 1 1))
                     (a, b) = (-1, 1)
                 in  caseB dl
                         [{- ((==* V3 a a a), getIt [dl, V3 a a 0, V3 a 0 0, V3 0 a 0, V3 a 0 a, V3 0 0 a, V3 0 a a])
@@ -1406,8 +1412,10 @@ createPolygonisationRenderer window = do
                 -- skyBoxRenderer viewPort
                 forM_ indexedBlockBuffers $ \indexedBlockBuffer ->
                     indexedBlockRenderer (viewPort, indexedBlockBuffer)
+                {-
                 when (isJust maybeCubeRenderer) $ do
                     fromJust maybeCubeRenderer viewPort
+                -}
                 when debug $ do
                     frustumRenderer viewPort
                     blockOutlinesRenderer viewPort (length highlightedBlocks)
