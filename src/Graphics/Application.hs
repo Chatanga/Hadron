@@ -211,6 +211,7 @@ buildDearImGui worldRef contextRef guiRef = do
     let readOnly x _ = x
     let fpsPath = DataPath guiRef (pack . (\n -> showGFloat (Just 2) n "") . guiFps) readOnly
         debugPath = DataPath guiRef guiDebug (\g x -> g{ guiDebug = x })
+        pickingPath = DataPath guiRef guiPicking (\g x -> g{ guiPicking = x })
         fogDensity = DataPath guiRef guiFogDensity (\g x -> g{ guiFogDensity = x })
         [xPath, yPath, zPath] = map
             (\c -> DataPath worldRef (pack . show . c . cameraPosition . snd . head . worldCameras) readOnly)
@@ -229,6 +230,7 @@ buildDearImGui worldRef contextRef guiRef = do
         sliderFloat "density" fogDensity 0 0.005
         text "Misc"
         checkbox "Debug" debugPath
+        checkbox "Picking" pickingPath
         {-
         clicking <- button "Close"
         when clicking $ Data.StateVar.get debugPath >>= print
@@ -251,7 +253,7 @@ runApplication name = do
 
         currentWorld <- liftIO . newIORef =<< createWorld window
         currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation "primary-camera"
-        currentGui <- liftIO $ newIORef (Gui 0 0.002 false)
+        currentGui <- liftIO $ newIORef (Gui 0 0.002 false false)
         uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext currentGui
         quitRef <- liftIO $ newIORef False
 

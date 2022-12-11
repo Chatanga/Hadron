@@ -53,67 +53,6 @@ https://developer.nvidia.com/gpugems/gpugems3/part-i-geometry/chapter-1-generati
 
 ----------------------------------------------------------------------------------------------------------------------
 
-allB :: Boolean c => (a -> c) -> [a] -> c
-allB f = foldl1 (&&*) . map f
-
-anyB :: Boolean c => (a -> c) -> [a] -> c
-anyB f = foldl1 (||*) . map f
-
-andB :: Boolean c => [c] -> c
-andB = foldl1 (&&*)
-
-orB :: Boolean c => [c] -> c
-orB = foldl1 (||*)
-
-maximumB :: (IfB a, OrdB a) => [a] -> a
-maximumB = foldl1 maxB
-
-minimumB :: (IfB a, OrdB a) => [a] -> a
-minimumB = foldl1 minB
-
-maximumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
-maximumByB _ [] = errorWithoutStackTrace "maximumByB: empty list"
-maximumByB cmp xs = foldl1 maxBy xs where
-    maxBy x y = ifThenElse' (cmp x y ==* 1) x y
-
-minimumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
-minimumByB _ [] = errorWithoutStackTrace "minimumByB: empty list"
-minimumByB cmp xs = foldl1 minBy xs where
-    minBy x y = ifThenElse' (cmp x y ==* 1) y x
-
-comparingB :: (a -> S x Float) -> a -> a -> S x Int
-comparingB p x y = compareB (p x) (p y)
-
-compareB :: S x Float -> S x Float -> S x Int
-compareB x y = guardedB undefined
-    [ (x ==* y, 0)
-    , (x <=* y, -1)
-    ] 1
-
-forN :: (ShaderType a x) => (S x Int, S x Int) -> a -> (S x Int -> a -> a) -> a
-forN (i, n) x f = snd $ while
-    (\(i, _) -> i <* n)
-    (\(i, x) -> (i + 1, f i x))
-    (i, x)
-
--- ***
-
-scalePoint :: (Num a) => V4 a -> a -> V4 a
-scalePoint p s = point $ (p ^._xyz) ^* s
-
--- Normalized device coordinate
-ndcFrustum :: Num a => [V3 a]
-ndcFrustum =
-    [ V3 (-1) (-1) (-1)
-    , V3 1 (-1) (-1)
-    , V3 (-1) 1 (-1)
-    , V3 1 1 (-1)
-    , V3 (-1) (-1) 1
-    , V3 1 (-1) 1
-    , V3 (-1) 1 1
-    , V3 1 1 1
-    ]
-
 blockSize :: Num a => a
 blockSize = 32
 
@@ -163,44 +102,6 @@ calculateDensity'' _ _ offset p = density where
         (ifThenElse' (x ==* 1 &&* y ==* 1) (-3) -- (-5)
         0)))
 
-{- Too naive… Can't really work. It does a good, if not perfect, job on average on a random landscape,
-but would occasionally make things worst (ironically when doing nothing would be perfectly fine).
--}
-getAdaptiveDensity
-    :: (V3 FFloat -> FFloat)
-    -> V3 FFloat
-    -> FFloat
-getAdaptiveDensity getRawDensity (V3 x y z) =
-    let
-        -- densityTextureSize must be odd to have even coordinates at the borders
-        split c = let m = mod'' (c - densityMargin) 2 in ifThenElse' (m <* 0.5) (c, c) (c - 1, c + 1)
-        (x1, x2) = split x
-        (y1, y2) = split y
-        (z1, z2) = split z
-        mean n ds = sum ds / n
-    in
-        ifThenElse' (x1 /=* x2)
-            (ifThenElse' (y1 /=* y2)
-                (ifThenElse' (z1 /=* z2)
-                    (mean 8 [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2], z <- [z1, z2] ]) -- Should not happen on the cube border.
-                    (mean 4 [ getRawDensity (V3 x y z) | x <- [x1, x2], y <- [y1, y2] ])
-                )
-                (ifThenElse' (z1 /=* z2)
-                    (mean 4 [ getRawDensity (V3 x y z) | x <- [x1, x2], z <- [z1, z2] ])
-                    (mean 2 [ getRawDensity (V3 x y z) | x <- [x1, x2] ])
-                )
-            )
-            (ifThenElse' (y1 /=* y2)
-                (ifThenElse' (z1 /=* z2)
-                    (mean 4 [ getRawDensity (V3 x y z) | y <- [y1, y2], z <- [z1, z2] ])
-                    (mean 2 [ getRawDensity (V3 x y z) | y <- [y1, y2] ])
-                )
-                (ifThenElse' (z1 /=* z2)
-                    (mean 2 [ getRawDensity (V3 x y z) | z <- [z1, z2] ])
-                    (mean 1 [ getRawDensity (V3 x y z) ])
-                )
-            )
-
 {- Remember this function is only called for points on the cube border, not inside.
 
     upscale
@@ -216,15 +117,14 @@ getAdaptiveDensity getRawDensity (V3 x y z) =
    |      |      |   Note:
   [A]----(B)----[A]    three odd coordinates are impossible on the cube border.
 -}
-getBetterAdaptiveDensity
+getAdaptiveDensity
     :: Sampler1D (Format RInt)
     -> Sampler1D (Format RGBAInt)
     -> (V3 FFloat -> FFloat)
     -> V3 FFloat
     -> FFloat
-getBetterAdaptiveDensity aritySampler caseSampler getRawDensity (V3 x y z) =
+getAdaptiveDensity aritySampler caseSampler getRawDensity (V3 x y z) =
     let
-        -- isEven c = abs (mod'' (c - densityMargin) 2) <* 0.25
         isEven c = fract' (abs (c - densityMargin) / 2) <* 0.25
 
         -- densityTextureSize must be odd to have even coordinates at the borders
@@ -252,7 +152,9 @@ getBetterAdaptiveDensity aritySampler caseSampler getRawDensity (V3 x y z) =
             , ((==* 3), v3)
             ] 0
 
-        complexCase [d0, d1, d2, d3] = complexCase' [d0, d1, d3, d2]
+        notHappening = 0
+
+        complexCase [d0, d1, d3, d2] = complexCase' [d0, d1, d2, d3]
 
         complexCase' :: [FFloat] -> FFloat
         complexCase' densities = v where
@@ -263,9 +165,9 @@ getBetterAdaptiveDensity aritySampler caseSampler getRawDensity (V3 x y z) =
                 [ ((==* 0), handleCase0)
                 , ((==* 2), handleCase2)
                 , ((==* 4), handleCase4)
-                ] 6.66
+                ] notHappening
 
-            handleCase0 = handleCaseX -- 6.66 -- NaN
+            handleCase0 = handleCaseX
 
             handleCase2 = (pickFrom4 i0 densities + pickFrom4 i1 densities) / 2
 
@@ -279,7 +181,7 @@ getBetterAdaptiveDensity aritySampler caseSampler getRawDensity (V3 x y z) =
                 (a', b') = ifThenElse' (b <* 1)
                     (a, b)
                     ((v12 + v21) / 2, v12 / (v12 - v11) + v21 / (v21 - v22))
-                v = ifThenElse' (abs b' <* 0.0000001)
+                v = ifThenElse' (abs b' <* epsilon)
                     ((v11 + v12 + v21 + v22) / 4)
                     (a' - a' / b')
 
@@ -405,44 +307,26 @@ createFillDensityRenderer offsetAndScaleBuffer neighbourUpscaleTexture densityTe
 
         -- Pixel centers are located at half-pixel centers and need to be shifted (z is fine).
         -- (cf. https://registry.khronos.org/OpenGL-Refpages/gl4/html/gl_FragCoord.xhtml)
-        let fs' = getDensity'' . (\p -> p - V3 0.5 0.5 0) <$> fs
-
-            getDensity'' :: V3 FFloat -> FFloat
-            getDensity'' p =
-                let upscale = getUpscale p
-                in  ifThenElse' (upscale >* 0.5)
-                    (getBetterAdaptiveDensity aritySampler caseSampler getDensity p)
-                    (getDensity p)
+        let fs' = getDensity' . (\p -> p - V3 0.5 0.5 0) <$> fs
 
             getDensity' :: V3 FFloat -> FFloat
             getDensity' p =
                 let upscale = getUpscale p
                 in  ifThenElse' (upscale >* 0.5)
-                    (getAdaptiveDensity getDensity p)
+                    (getAdaptiveDensity aritySampler caseSampler getDensity p)
                     (getDensity p)
 
             getDensity :: V3 FFloat -> FFloat
             getDensity = calculateDensity 7 noiseSamplers (offset - scale *^ pure densityMargin) . (scale *^)
 
-            getUpscale' :: V3 FFloat -> ColorSample F RFloat
-            getUpscale' p = texelFetch3D neighbourUpscaleSampler (pure 0) 0 (toDiscreteLocationVector p + V3 1 1 1)
-
+            -- Return the max upscale when the sampling is done on an edge.
             getUpscale :: V3 FFloat -> ColorSample F RFloat
             getUpscale p =
                 let dl = toDiscreteLocationVector p
                     getIt = maximumB . map (texelFetch3D neighbourUpscaleSampler (pure 0) 0 . (+ V3 1 1 1))
                     (a, b) = (-1, 1)
                 in  caseB dl
-                        [{- ((==* V3 a a a), getIt [dl, V3 a a 0, V3 a 0 0, V3 0 a 0, V3 a 0 a, V3 0 0 a, V3 0 a a])
-                        , ((==* V3 a a b), getIt [dl, V3 a a 0, V3 a 0 0, V3 0 a 0, V3 a 0 b, V3 0 0 b, V3 0 a b])
-                        , ((==* V3 a b a), getIt [dl, V3 a b 0, V3 a 0 0, V3 0 b 0, V3 a 0 a, V3 0 0 a, V3 0 b a])
-                        , ((==* V3 a b b), getIt [dl, V3 b b 0, V3 a 0 0, V3 0 b 0, V3 a 0 b, V3 0 0 b, V3 0 b b])
-                        , ((==* V3 b a a), getIt [dl, V3 b a 0, V3 b 0 0, V3 0 a 0, V3 b 0 a, V3 0 0 a, V3 0 a a])
-                        , ((==* V3 b a b), getIt [dl, V3 b a 0, V3 b 0 0, V3 0 a 0, V3 b 0 a, V3 0 0 a, V3 0 a a])
-                        , ((==* V3 b b a), getIt [dl, V3 b b 0, V3 b 0 0, V3 0 b 0, V3 b 0 a, V3 0 0 a, V3 0 b a])
-                        , ((==* V3 b b b), getIt [dl, V3 b b 0, V3 b 0 0, V3 0 b 0, V3 b 0 b, V3 0 0 b, V3 0 b b])
-                        --
-                        ,-} ((==* V3 a a 0), getIt [dl, V3 a 0 0, V3 0 a 0])
+                        [ ((==* V3 a a 0), getIt [dl, V3 a 0 0, V3 0 a 0])
                         , ((==* V3 a b 0), getIt [dl, V3 a 0 0, V3 0 b 0])
                         , ((==* V3 b a 0), getIt [dl, V3 b 0 0, V3 0 a 0])
                         , ((==* V3 b b 0), getIt [dl, V3 b 0 0, V3 0 b 0])
@@ -1130,7 +1014,7 @@ createBlockOutlinesRenderer window projectionBuffer outlineBuffer = do
 
         let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
         fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions projectedLines
-            <&> withRasterizedInfo (\_ p -> (point blue, rasterizedFragCoord p ^. _z - 0.0000001))
+            <&> withRasterizedInfo (\_ p -> (point blue, rasterizedFragCoord p ^. _z - epsilon))
 
         let colorOption = ContextColorOption NoBlending (pure True)
             depthOption = DepthOption Less True
@@ -1239,7 +1123,7 @@ createFrustumRenderer window projectionBuffer = do
 
         let rasterOptions = \(viewPort, _) -> (Front, viewPort, DepthRange 0 1)
         fs :: FragmentStream (V4 FFloat, FragDepth) <- rasterize rasterOptions projectedLines
-            <&> withRasterizedInfo (\_ p -> (point yellow, rasterizedFragCoord p ^. _z - 0.0000001))
+            <&> withRasterizedInfo (\_ p -> (point yellow, rasterizedFragCoord p ^. _z - epsilon))
 
         let colorOption = ContextColorOption NoBlending (pure True)
             depthOption = DepthOption Less True
@@ -1268,8 +1152,7 @@ createPolygonisationRenderer :: (MonadIO m, MonadAsyncException m)
     => Window os RGBAFloat Depth
     -> ContextT GLFW.Handle os m (RenderContext m os)
 createPolygonisationRenderer window = do
-    let debug = True
-        poolSize = 1000 -- 4 Mo / block
+    let poolSize = 1000 -- 4 Mo / block
         blockBufferSize = blockSize^3 * 3
         indexBufferSize = blockBufferSize * maxCellTriangleCount
         vMemSize = blockBufferSize * 7 * 4 + indexBufferSize * 4
@@ -1345,6 +1228,7 @@ createPolygonisationRenderer window = do
     let renderIt oldPickingRay cache _ bounds camera cameras sun lights _ _ gui cursor = do
             let ((x, y), (w, h)) = bounds
                 debug = guiDebug gui
+                picking = guiPicking gui
                 fogDensity = guiFogDensity gui
 
             writeBuffer fogBuffer 0 [Fog (point skyBlue) 100 1000 fogDensity]
@@ -1376,14 +1260,16 @@ createPolygonisationRenderer window = do
             -- let pickBlocks ray = map fst $ sortBy (comparing snd) $ mapMaybe (\b -> (,) b <$> rayWithCubeIntersect ray b) blocks
             let pickBlocks ray = map fst $ mapMaybe (\b -> (,) b <$> rayWithCubeIntersect ray b) blocks
                 distanceToOrigin (o, _) (_, (s, p)) = let blockCenter = p + pure (s / 2) in distance p o
-            maybeCubeRenderer <- case pickingRay of
-                Just ray -> do
-                    generateIntersectionBlock 1 ray (sortOn (distanceToOrigin ray) (addNeighbourUpscaleToBlocks (pickBlocks ray))) >>= \case
-                        Just cellPositionAndCaseWithDensities -> do
-                            cubeRenderer <- cubePreRenderer cellPositionAndCaseWithDensities
-                            return $ Just cubeRenderer
-                        Nothing -> return Nothing
-                Nothing -> return Nothing
+            maybeCubeRenderer <- if picking
+                then case pickingRay of
+                    Just ray -> do
+                        generateIntersectionBlock 1 ray (sortOn (distanceToOrigin ray) (addNeighbourUpscaleToBlocks (pickBlocks ray))) >>= \case
+                            Just cellPositionAndCaseWithDensities -> do
+                                cubeRenderer <- cubePreRenderer cellPositionAndCaseWithDensities
+                                return $ Just cubeRenderer
+                            Nothing -> return Nothing
+                    Nothing -> return Nothing
+                else return Nothing
 
             let blocksWithUpscale = addNeighbourUpscaleToBlocks blocks
                 generateIndexedBlock (neighbourUpscales, (scale, offset)) (blockBuffer, indexBuffer) = do
@@ -1397,11 +1283,6 @@ createPolygonisationRenderer window = do
                 blocksWithUpscale
 
             let highlightedBlocks = map snd blocks'
-            {-
-            let highlightedBlocks = case pickingRay of
-                    Just ray -> take 6 (pickBlocks ray)
-                    Nothing -> []
-            -}
             when debug $
                 writeBuffer outlineBuffer 0 highlightedBlocks
 
@@ -1412,10 +1293,8 @@ createPolygonisationRenderer window = do
                 -- skyBoxRenderer viewPort
                 forM_ indexedBlockBuffers $ \indexedBlockBuffer ->
                     indexedBlockRenderer (viewPort, indexedBlockBuffer)
-                {-
                 when (isJust maybeCubeRenderer) $ do
                     fromJust maybeCubeRenderer viewPort
-                -}
                 when debug $ do
                     frustumRenderer viewPort
                     blockOutlinesRenderer viewPort (length highlightedBlocks)

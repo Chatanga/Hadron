@@ -2,6 +2,17 @@
 
 module Graphics.Shaders
     ( Gui (..)
+    , allB
+    , anyB
+    , andB
+    , orB
+    , maximumB
+    , minimumB
+    , maximumByB
+    , minimumByB
+    , comparingB
+    , compareB
+    , forN
     , DirectionLight (..), DirectionLightB (..), DirectionLightS (..)
     , PointLight (..), PointLightB (..), PointLightS (..)
     , FogEquation(..)
@@ -63,7 +74,53 @@ data Gui = Gui
     { guiFps :: Double
     , guiFogDensity :: Float
     , guiDebug :: Bool
+    , guiPicking :: Bool
     }
+
+------------------------------------------------------------------------------------------------------------------------
+
+allB :: Boolean c => (a -> c) -> [a] -> c
+allB f = foldl1 (&&*) . map f
+
+anyB :: Boolean c => (a -> c) -> [a] -> c
+anyB f = foldl1 (||*) . map f
+
+andB :: Boolean c => [c] -> c
+andB = foldl1 (&&*)
+
+orB :: Boolean c => [c] -> c
+orB = foldl1 (||*)
+
+maximumB :: (IfB a, OrdB a) => [a] -> a
+maximumB = foldl1 maxB
+
+minimumB :: (IfB a, OrdB a) => [a] -> a
+minimumB = foldl1 minB
+
+maximumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
+maximumByB _ [] = errorWithoutStackTrace "maximumByB: empty list"
+maximumByB cmp xs = foldl1 maxBy xs where
+    maxBy x y = ifThenElse' (cmp x y ==* 1) x y
+
+minimumByB :: ShaderType a x => (a -> a -> S x Int) -> [a] -> a
+minimumByB _ [] = errorWithoutStackTrace "minimumByB: empty list"
+minimumByB cmp xs = foldl1 minBy xs where
+    minBy x y = ifThenElse' (cmp x y ==* 1) y x
+
+comparingB :: (a -> S x Float) -> a -> a -> S x Int
+comparingB p x y = compareB (p x) (p y)
+
+compareB :: S x Float -> S x Float -> S x Int
+compareB x y = guardedB undefined
+    [ (x ==* y, 0)
+    , (x <=* y, -1)
+    ] 1
+
+forN :: (ShaderType a x) => (S x Int, S x Int) -> a -> (S x Int -> a -> a) -> a
+forN (i, n) x f = snd $ while
+    (\(i, _) -> i <* n)
+    (\(i, x) -> (i + 1, f i x))
+    (i, x)
 
 ------------------------------------------------------------------------------------------------------------------------
 

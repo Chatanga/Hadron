@@ -1,5 +1,8 @@
 module Graphics.Geometry
-    ( BoundingInfo(..)
+    ( epsilon
+    , scalePoint
+    , ndcFrustum
+    , BoundingInfo(..)
     , Camera(..)
     , getSight
     , getBearing
@@ -21,6 +24,25 @@ import Control.Lens ( (^.) )
 import Linear
 
 ------------------------------------------------------------------------------------------------------------------------
+
+epsilon :: Fractional a => a
+epsilon = 0.0000001
+
+scalePoint :: (Num a) => V4 a -> a -> V4 a
+scalePoint p s = point $ (p ^._xyz) ^* s
+
+-- Normalized device coordinate
+ndcFrustum :: Num a => [V3 a]
+ndcFrustum =
+    [ V3 (-1) (-1) (-1)
+    , V3 1 (-1) (-1)
+    , V3 (-1) 1 (-1)
+    , V3 1 1 (-1)
+    , V3 (-1) (-1) 1
+    , V3 1 (-1) 1
+    , V3 (-1) 1 1
+    , V3 1 1 1
+    ]
 
 data BoundingInfo
     = BoundingSphere (V3 Float) Float -- center radius

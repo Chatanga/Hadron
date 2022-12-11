@@ -28,6 +28,7 @@ import Graphics.CubeRoom
 import Graphics.Geometry
 import Graphics.Incal
 import Graphics.Polygonisation
+import Graphics.RayMarching
 import Graphics.Shaders
 import Graphics.Texture
 import Graphics.View
@@ -35,7 +36,7 @@ import Graphics.World
 
 ------------------------------------------------------------------------------------------------------------------------
 
-data SceneName = Incal | Polygonisation | CubeRoom
+data SceneName = Incal | Polygonisation | CubeRoom | RayMarching
 
 data SceneContext m os = SceneContext
     { sceneContextCameraName :: !String
@@ -72,6 +73,7 @@ createSceneContext window sceneName cameraName = do
         Incal -> createIncalRenderer window
         Polygonisation -> createPolygonisationRenderer window
         CubeRoom -> createCubeRoomRenderer window
+        RayMarching -> createRayMarchingRenderer window
     return $ SceneContext
         cameraName
         Map.empty
