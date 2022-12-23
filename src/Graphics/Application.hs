@@ -252,7 +252,7 @@ runApplication name = do
             (GLFW.defaultWindowConfig name){ GLFW.configWidth = w, GLFW.configHeight = h }
 
         currentWorld <- liftIO . newIORef =<< createWorld window
-        currentContext <- liftIO . newIORef =<< createSceneContext window Polygonisation "primary-camera"
+        currentContext <- liftIO . newIORef =<< createSceneContext window RayMarching "primary-camera"
         currentGui <- liftIO $ newIORef (Gui 0 0.002 false false)
         uiRef <- liftIO . newIORef $ createScenicUI window currentWorld currentContext currentGui
         quitRef <- liftIO $ newIORef False
