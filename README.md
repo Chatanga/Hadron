@@ -36,14 +36,16 @@ Install native packages on Ubuntu (more or less):
 * libglu-dev
 * zlib1g-dev
 * libglfw3-dev
+* libsdl2-dev
+* libglew-dev
 
 Retrieve source packages:
 
 ``` bash
-git clone git@github.com:Chatanga/Hadron.git
-git clone git@github.com:Chatanga/GPipe-Core.git
-git clone git@github.com:Chatanga/GPipe-GLFW.git
-git clone git@github.com:haskell-game/dear-imgui.hs.git
+git clone https://github.com/Chatanga/Hadron.git
+git clone https://github.com/Chatanga/GPipe-Core.git
+git clone https://github.com/Chatanga/GPipe-GLFW.git
+git clone https://github.com/haskell-game/dear-imgui.hs.git (pick version 2.1.3)
 cd dear-imgui.hs
 git submodule init
 git submodule update

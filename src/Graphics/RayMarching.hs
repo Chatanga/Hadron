@@ -65,6 +65,9 @@ sdBoxFrame p b e =
             ]
 
 -- Torus - exact
+-- The torus axis is Y
+-- tx: torus radius
+-- ty: torus section radius
 sdTorus :: V3 FFloat -> V2 FFloat -> FFloat
 sdTorus (V3 px py pz) (V2 tx ty) = norm (V2 (norm (V2 px pz) - tx) py) - ty
 
@@ -72,9 +75,9 @@ sdTorus (V3 px py pz) (V2 tx ty) = norm (V2 (norm (V2 px pz) - tx) py) - ty
 sdCappedTorus :: V3 FFloat -> V2 FFloat -> FFloat -> FFloat -> FFloat
 sdCappedTorus p@(V3 px py pz) sc@(V2 scx scy) ra rb =
     let p'@(V3 px' py' pz') = V3 (abs px) py pz
-        pxy = p'^._xy
-        k = ifThenElse' (scy * px' >* scx * py') (dot pxy sc) (norm pxy)
-    in  sqrt (dot p' p' + ra * ra - 2.0 * ra * k) - rb
+        p'xy = p'^._xy
+        k = ifThenElse' (scy * px' >* scx * py') (dot p'xy sc) (norm p'xy)
+    in  sqrt (dot p' p' + ra * ra - 2 * ra * k) - rb
 
 -- Link - exact (https://www.shadertoy.com/view/wlXSD7)
 sdLink :: V3 FFloat -> FFloat -> FFloat -> FFloat -> FFloat
@@ -126,10 +129,10 @@ sdHexPrism :: V3 FFloat -> V2 FFloat -> FFloat
 sdHexPrism p' (V2 hx hy) =
     let splitXY_Z (V3 x y z) = (V2 x y, z)
         (kxy, kz) = splitXY_Z (V3 (-0.8660254) 0.5 0.57735)
-        (pxy, pz) = splitXY_Z (abs p')
-        V2 px py = pxy - 2 * minB (dot kxy pxy) 0 *^ kxy
+        (p'xy, pz) = splitXY_Z (abs p')
+        pxy@(V2 px py) = p'xy - 2 * minB (dot kxy p'xy) 0 *^ kxy
         d@(V2 dx dy) = V2
-            (norm (V2 px py - V2 (clamp px (- kz * hx) (kz * hx)) hx) * signum (py - hx))
+            (norm (V2 px py - V2 (clamp px (-kz * hx) (kz * hx)) hx) * signum (py - hx))
             (pz - hy)
     in  minB (maxB dx dy) 0 + norm (maxB 0 <$> d)
 
@@ -429,17 +432,17 @@ sceneDistance' p = (f p, red) where
     -- sdBox p (V3 2 4 6)
     -- sdRoundBox p (V3 2 4 6) 1
     -- sdBoxFrame p (V3 2 4 6) (V3 0.1 0.2 0.3)
-    f p = sdTorus p (V2 5 1)
-    -- sdCappedTorus
-    -- sdLink
-    -- sdCylinder
-    -- sdCone
-    -- sdBoundCone
-    -- sdInfiniteCone
-    -- sdPlane
-    -- sdHexPrism
-    -- sdTriPrism
-    -- sdCapsule
+    -- sdTorus p (V2 5 1)
+    -- sdCappedTorus p (V2 (sin 1) (cos 1)) 5 1
+    -- sdLink p 2 5 1
+    -- sdCylinder p (V3 2 4 6)
+    -- sdCone p (V2 (sin 0.5) (cos 0.5)) 5 
+    -- sdBoundCone p (V2 (sin 0.5) (cos 0.5)) 5
+    -- sdInfiniteCone p (V2 (sin 0.5) (cos 0.5))
+    -- sdPlane p (signorm $ V3 2 1 5) 3
+    -- sdHexPrism p (V2 2 4)
+    -- sdTriPrism p (V2 4 2)
+    f p = sdCapsule p (V3 2 4 6) (V3 1 2 3) 3
     -- sdVerticalCapsule
     -- sdCappedCylinder
     -- sdArbitraryCappedCylinder
